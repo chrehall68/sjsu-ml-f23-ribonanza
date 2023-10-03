@@ -1,1 +1,4 @@
-train_data*.csv
+train_data*
+test*
+submission*
+*_model
