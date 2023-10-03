@@ -10,4 +10,4 @@ individual notebooks' `TODO` sections.
 - Eliot Hall
 
 ## Score
-Currently, we have a high score of 0.26166 MAE.
+For the high score, view the individual notebooks
