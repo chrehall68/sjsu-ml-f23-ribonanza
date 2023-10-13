@@ -2,3 +2,4 @@ train_data*
 test*
 submission*
 *_model
+tmp/
