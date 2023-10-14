@@ -3,3 +3,4 @@ test*
 submission*
 *_model
 tmp/
+runs/
