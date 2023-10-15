@@ -1,8 +1,9 @@
 # SJSU ML Club's Ribonanza Project
 SJSU ML Club's attempt at the [Kaggle Ribonanza project](https://www.kaggle.com/competitions/stanford-ribonanza-rna-folding/) hosted by Stanford.
 
-Currently, we have two approaches (`ribonanza.ipynb` and `ribonanza2.ipynb`). For information on what needs to be done, check out the
-individual notebooks' `TODO` sections.
+Currently, we have three approaches (`ribonanza.ipynb`, `ribonanza2.ipynb`, and `ribonanza3.ipynb`). The latest notebook
+(and the best place to get started) is `ribonanza3.ipynb`. For information on what needs to be done, check out the
+`TODO` section in `ribonanza3.ipynb`.
 
 ## Members
 - Haydon Behl
