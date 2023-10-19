@@ -12,3 +12,6 @@ Currently, we have three approaches (`ribonanza.ipynb`, `ribonanza2.ipynb`, and 
 
 ## Score
 For the high score, view the individual notebooks
+
+## Google Colab
+[Ribonanza notebook](https://colab.research.google.com/drive/1qjnRSMa6HW7X73bNuTIhYJqQ5MZX_p_K?usp=sharing)
