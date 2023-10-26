@@ -1,6 +1,12 @@
+.DS_Store
+.idea/
 train_data*
 test*
 submission*
 *_model
 tmp/
 runs/
+arnie/
+contrafold/
+LinearPartition/
+stanford/

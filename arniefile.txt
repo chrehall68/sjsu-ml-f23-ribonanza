@@ -1,0 +1,8 @@
+# Vienna RNAfold 2 Mac using installer:
+#vienna_2: /usr/local/bin
+
+# CONTRAfold build
+contrafold_2: /Users/exide/rna/contrafold/src
+
+#LinearPartition build
+linearpartition: /Users/exide/rna/LinearPartition/
