@@ -406,7 +406,7 @@ def masked_train(
         writer.add_scalar("val_mae", val_mae, global_step=epoch)
 
         # save every epoch
-        torch.save(m.state_dict(), f"{model_name}.pt")
+        torch.save(m.state_dict(), f"{model_name}_model.pt")
 
 
 def train(
