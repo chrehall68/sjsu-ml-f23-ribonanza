@@ -6,6 +6,7 @@ import numpy as np
 from tqdm import tqdm
 from datasets import Dataset
 import os
+from constants import NUM_BPP, NUM_REACTIVITIES
 
 # used for better attention mechanisms
 import xformers.components.positional_embedding as embeddings
@@ -13,12 +14,6 @@ import xformers.components.attention as attentions
 import xformers.components.attention.utils as att_utils
 import xformers.components as components
 
-
-# according to kaggle, this is the maximum # of reactivites to be used
-NUM_REACTIVITIES = 457
-
-# there are 4 different bases (AUCG)
-NUM_BASES = 4
 
 # if no gpu available, use cpu. if on macos>=13.0, use mps
 DEVICE = "cpu"
@@ -183,7 +178,7 @@ class AttentionModel(torch.nn.Module):
         self.n_heads = n_heads
         self.latent_dim = latent_dim
 
-        self.proj = torch.nn.Linear(2, latent_dim).to(device)
+        self.proj = torch.nn.Linear(NUM_BPP + 1, latent_dim).to(device)
 
         # positional embedding encoder/decoder layers
         self.pos_embedding = embeddings.SinePositionalEmbedding(latent_dim).to(device)
@@ -232,7 +227,7 @@ class AttentionModel(torch.nn.Module):
         )
 
         # project inputs and bpp to latent_dim
-        x = self.proj(torch.concat([tokens.unsqueeze(-1), bpp.unsqueeze(-1)], dim=-1))
+        x = self.proj(torch.concat([tokens.unsqueeze(-1), bpp], dim=-1))
 
         # add sinusoidal embedding and then perform attention
         x = self.pos_embedding(x)
@@ -414,6 +409,7 @@ def train(
     dataset_name: str,
     lr: float = 3e-4,
     batch_size: int = 64,
+    val_split: float = 0.1,
     epochs: int = 10,
     model_dict: dict = dict(
         latent_dim=32,
@@ -432,7 +428,8 @@ def train(
         - dataset_name: str - the name of the dataset, either "2a3" or "dms"
         - lr: float - the learning rate to use. Defaults to 3e-4
         - batch_size: int - the batch size to use when training and running validation. Defaults to 64
-        - epochs: int - the number of epochs to train for
+        - val_split: float - the size of the validation, from 0 to 1. Defaults to 0.1
+        - epochs: int - the number of epochs to train for. Defaults to 10
         - model_dict: dict - a dictionary containing all the arguments to be passed when instantiating
             the `AttentionModel`
     """
@@ -442,7 +439,7 @@ def train(
     dataset = Dataset.load_from_disk(
         f"train_data_{dataset_name}_preprocessed"
     ).with_format("torch")
-    split = dataset.train_test_split(test_size=0.1).select_columns(columns)
+    split = dataset.train_test_split(test_size=val_split).select_columns(columns)
     train_dataset = split["train"]
     val_dataset = split["test"]
 

@@ -1,7 +1,8 @@
 # imports
 import numpy as np
 from tqdm import tqdm
-from datasets import Dataset
+from datasets import Dataset, Array2D
+from constants import NUM_REACTIVITIES, NUM_BPP
 import os
 
 # typing hints
@@ -10,12 +11,6 @@ from collections.abc import Callable
 
 # used for bpps
 from arnie.bpps import bpps
-
-# according to kaggle, this is the maximum # of reactivites to be used
-NUM_REACTIVITIES = 457
-
-# there are 4 different bases (AUCG)
-NUM_BASES = 4
 
 
 # encode inputs as
@@ -135,7 +130,7 @@ def process_data(row):
     # initialize arrays
     # note that we assume everything is masked until told otherwise
     inputs = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
-    bpp = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
+    bpp = np.zeros((NUM_REACTIVITIES, NUM_BPP), dtype=np.float32)
     output_masks = np.ones((NUM_REACTIVITIES,), dtype=np.bool_)
     reactivity_errors = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
     reactivities = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
@@ -148,10 +143,12 @@ def process_data(row):
     )
 
     # get the probability that any of those bases are paired
-    bpp[:seq_len] = np.sum(
+    bpp[:seq_len, 0] = np.sum(
         bpps(row["sequence"], package="contrafold", linear=True, threshknot=True),
         axis=-1,
     )
+    bpp[:seq_len, 1] = np.sum(bpps(row["sequence"], package="contrafold"), axis=-1)
+    bpp[:seq_len, 2] = np.sum(bpps(row["sequence"], package="eternafold"), axis=-1)
 
     # get the reactivities and their errors
     reactivities[:seq_len] = np.array(
@@ -278,8 +275,10 @@ def preprocess_csv(
     ] + extra_cols_to_keep
 
     # load dataset and map it to our preprocess function
-    ds = Dataset.from_csv(file_name).map(
-        map_fn, num_proc=n_proc, load_from_cache_file=not force
+    ds = (
+        Dataset.from_csv(file_name)
+        .map(map_fn, num_proc=n_proc, load_from_cache_file=not force)
+        .cast_column("bpp", Array2D(shape=(NUM_REACTIVITIES, NUM_BPP), dtype="float32"))
     )
 
     # drop excess columns and save to disk
