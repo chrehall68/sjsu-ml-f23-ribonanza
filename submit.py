@@ -1,7 +1,7 @@
 from models import DEVICE, AttentionModel
 import torch
 import torch.utils.data as data
-import tqdm
+from tqdm import tqdm
 from datasets import Dataset
 import os
 
