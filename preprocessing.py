@@ -209,7 +209,7 @@ def process_data_test(row):
     """
     # initialize arrays
     # note that we assume everything is masked until told otherwise
-    inputs = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
+    inputs = np.zeros((NUM_REACTIVITIES, NUM_BPP), dtype=np.float32)
     bpp = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
 
     seq_len = len(row["sequence"])
@@ -220,10 +220,12 @@ def process_data_test(row):
     )
 
     # get the probability that any of those bases are paired
-    bpp[:seq_len] = np.sum(
+    bpp[:seq_len, 0] = np.sum(
         bpps(row["sequence"], package="contrafold", linear=True, threshknot=True),
         axis=-1,
     )
+    bpp[:seq_len, 1] = np.sum(bpps(row["sequence"], package="contrafold"), axis=-1)
+    bpp[:seq_len, 2] = np.sum(bpps(row["sequence"], package="eternafold"), axis=-1)
 
     row["inputs"] = inputs
     row["bpp"] = bpp
