@@ -209,8 +209,8 @@ def process_data_test(row):
     """
     # initialize arrays
     # note that we assume everything is masked until told otherwise
-    inputs = np.zeros((NUM_REACTIVITIES, NUM_BPP), dtype=np.float32)
-    bpp = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
+    inputs = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
+    bpp = np.zeros((NUM_REACTIVITIES, NUM_BPP), dtype=np.float32)
 
     seq_len = len(row["sequence"])
 
