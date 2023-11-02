@@ -15,13 +15,7 @@ from collections.abc import Callable
 # used for bpps
 from arnie.bpps import bpps
 
-# if no gpu available, use cpu. if on macos>=13.0, use mps
-DEVICE = "cpu"
-
-if torch.backends.mps.is_built():
-    DEVICE = "mps"
-elif torch.backends.cuda.is_built():
-    DEVICE = "cuda"
+DEVICE = "mps"
 
 # encode inputs as
 # A : 1
