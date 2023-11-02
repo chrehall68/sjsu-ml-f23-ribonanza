@@ -14,6 +14,8 @@ import xformers.components.attention as attentions
 import xformers.components.attention.utils as att_utils
 import xformers.components as components
 
+# Uses attention if false
+use_baseline = True
 
 # if no gpu available, use cpu. if on macos>=13.0, use mps
 DEVICE = "cpu"
@@ -26,6 +28,44 @@ elif torch.backends.cuda.is_built():
 DEVICE = torch.device(DEVICE)
 print(DEVICE)
 
+class BaselineModel(torch.nn.Module):
+    def __init__(self, context_window: int = 31, device: str = DEVICE):
+        super(BaselineModel, self).__init__()
+        self.proj = torch.nn.Linear(256, 128).to(device)
+        self.preLayer_a = torch.nn.Linear(768, 128).to(device)
+        self.preLayer_b = torch.nn.Linear(341, 128).to(device)
+        self.preLayer_c = torch.nn.Linear(3, 128).to(device)
+        self.preLayer_d = torch.nn.Linear(457, 128).to(device)
+
+        self.conv_layer = torch.nn.Conv2d(1, 1, context_window, padding="same").to(
+            device
+        )
+        self.conv_layer_b = torch.nn.Conv2d(1, 1, context_window, padding="same").to(
+            device
+        )
+        self.ff = torch.nn.Linear(128*128, NUM_REACTIVITIES).to(device)
+        self.gelu = torch.nn.GELU()
+        self.relu = torch.nn.ReLU()
+
+    def forward(self, x: torch.Tensor, bpp: torch.Tensor):
+        x = self.gelu(self.preLayer_a(x))
+        x = x.reshape(x.shape[0], x.shape[2], x.shape[1])
+        x = self.gelu(self.preLayer_b(x))
+        x = x.reshape(x.shape[0], x.shape[2], x.shape[1])
+        bpp = self.gelu(self.preLayer_c(bpp))
+        bpp = bpp.reshape(bpp.shape[0], bpp.shape[2], bpp.shape[1])
+        bpp = self.gelu(self.preLayer_d(bpp))
+        bpp = bpp.reshape(bpp.shape[0], bpp.shape[2], bpp.shape[1])
+        x = torch.concat([x, bpp], dim=-1)
+        x = self.proj(x)
+        x = x.reshape(x.shape[0], -1,  x.shape[1], x.shape[2])
+
+        x = self.gelu(
+            self.conv_layer(x)
+            + torch.flip(self.conv_layer_b(torch.flip(x, dims=[3])), dims=[3])
+        )
+
+        return self.relu(self.ff(x.flatten(1)))
 
 class CustomTransformerEncoderLayer(torch.nn.Module):
     def __init__(
@@ -461,7 +501,10 @@ def train(
     writer = SummaryWriter(f"runs/{run_name}")
 
     # create model + optimizer
-    model = AttentionModel(**model_dict).to(DEVICE)
+    if use_baseline:
+        model = BaselineModel().to(DEVICE)
+    else:
+        model = AttentionModel(**model_dict).to(DEVICE)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
     # load old weights if possible

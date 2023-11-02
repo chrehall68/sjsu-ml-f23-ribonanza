@@ -29,4 +29,4 @@ if __name__ == "__main__":
     train("dms_linearfold", dataset_name="dms")
 
     # submit predictions
-    submit(batch_size=64)
+    # submit(batch_size=64)
