@@ -7,6 +7,7 @@ from tqdm import tqdm
 from datasets import Dataset, Array2D
 from constants import NUM_REACTIVITIES, NUM_BPP
 import os
+import random
 
 # typing hints
 from typing import List
@@ -125,8 +126,8 @@ def filter_DMS(force: bool = False):
         force,
     )
 
-tokenizer = AutoTokenizer.from_pretrained('./GENA_LM/gena-lm-bert-base/')
-bertConfig = BertConfig.from_pretrained('./GENA_LM/gena-lm-bert-base/')
+tokenizer = AutoTokenizer.from_pretrained('AIRI-Institute/gena-lm-bert-base-t2t')
+bertConfig = BertConfig.from_pretrained('AIRI-Institute/gena-lm-bert-base-t2t')
 bertModel = AutoModel.from_config(bertConfig).to(DEVICE)
 
 CUDA_TENSORS_ON_WORKER = True
@@ -135,7 +136,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 #if CUDA_TENSORS_ON_WORKER:
     #torch.multiprocessing.set_start_method('spawn')
 
-def bertemb(seq, debug=False):
+def bertemb(seq):
     """
     Returns BERT embedding of a given RNA/DNA sequence.
 
@@ -144,14 +145,11 @@ def bertemb(seq, debug=False):
         - debug : prints the sequence value after regex
     """
     value = [" ".join(list(re.sub(r"[UZOB]", "X", seq)))]
-    if debug:
-        print(value)
-
     with torch.no_grad():
-        tokens = tokenizer(value, return_tensors = 'pt')['input_ids'].to(DEVICE)
-        embs = bertModel(tokens).last_hidden_state.cpu().detach().numpy()
-    if debug:
-        print(embs)
+        tokens = tokenizer(value, return_tensors='pt')['input_ids'].to(DEVICE)
+        embs = bertModel(tokens).last_hidden_state.cpu().detach()
+    embs = embs.numpy()[0,:,:]
+    embs = np.pad(embs, ((0, 915-embs.shape[0]), (0, 0)), constant_values=0)
     if DEVICE == "cuda":
         torch.cuda.empty_cache()
     if DEVICE == "mps":
@@ -159,7 +157,7 @@ def bertemb(seq, debug=False):
     return embs
 
 def embed_data(row):
-    row["inputs"] = bertemb(row["sequence"])[0, :, :]
+    row["inputs"] = bertemb(row["sequence"])
     return row
 
 def process_data(row):
@@ -175,28 +173,21 @@ def process_data(row):
     """
     # initialize arrays
     # note that we assume everything is masked until told otherwise
-    inputs = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
     bpp = np.zeros((NUM_REACTIVITIES, NUM_BPP), dtype=np.float32)
     output_masks = np.ones((NUM_REACTIVITIES,), dtype=np.bool_)
     reactivity_errors = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
     reactivities = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
-
-    seq_len = len(row["sequence"])
-
-    # encode the bases
-    #inputs[:seq_len] = np.array(
-    #    list(map(lambda letter: base_map[letter], row["sequence"]))
-    #)
     sequence = row["sequence"]
+    seq_len = len(row["sequence"])
 
     # get the probability that any of those bases are paired
     bpp[:seq_len, 0] = np.sum(
-        bpps(row["sequence"], package="contrafold_2", linear=True, threshknot=True),
+        bpps(sequence, package="contrafold_2", linear=True, threshknot=True),
         axis=-1,
     )
     if DEVICE != "mps":
-        bpp[:seq_len, 1] = np.sum(bpps(row[")sequence"], package="contrafold_2"), axis=-1)
-        bpp[:seq_len, 2] = np.sum(bpps(row["sequence"], package="eternafold"), axis=-1)
+        bpp[:seq_len, 1] = np.sum(bpps(sequence, package="contrafold_2"), axis=-1)
+        bpp[:seq_len, 2] = np.sum(bpps(sequence, package="eternafold"), axis=-1)
     else:
         bpp[:seq_len, 1] = bpp[:seq_len, 0]
         bpp[:seq_len, 2] = bpp[:seq_len, 0]
@@ -260,20 +251,18 @@ def process_data_test(row):
     """
     # initialize arrays
     # note that we assume everything is masked until told otherwise
-    inputs = np.zeros((341,768), dtype=np.float32)
     bpp = np.zeros((NUM_REACTIVITIES, NUM_BPP), dtype=np.float32)
-
+    sequence = row["sequence"]
     seq_len = len(row["sequence"])
-
 
     # get the probability that any of those bases are paired
     bpp[:seq_len, 0] = np.sum(
-        bpps(row["sequence"], package="contrafold_2", linear=True, threshknot=True),
+        bpps(sequence, package="contrafold_2", linear=True, threshknot=True),
         axis=-1,
     )
     if DEVICE != "mps":
-        bpp[:seq_len, 1] = np.sum(bpps(row[")sequence"], package="contrafold_2"), axis=-1)
-        bpp[:seq_len, 2] = np.sum(bpps(row["sequence"], package="eternafold"), axis=-1)
+        bpp[:seq_len, 1] = np.sum(bpps(sequence, package="contrafold_2"), axis=-1)
+        bpp[:seq_len, 2] = np.sum(bpps(sequence, package="eternafold"), axis=-1)
     else:
         bpp[:seq_len, 1] = bpp[:seq_len, 0]
         bpp[:seq_len, 2] = bpp[:seq_len, 0]
@@ -303,7 +292,7 @@ def preprocess_csv(
         - reactivity_errors: Tensor(dtype=torch.float32) - the reactivity errors
         - output_masks: Tensor(dtype=torch.float32) - the elementwise weights to multiply the loss by to properly
             account for masked items and reactivity errors
-        - inputs: tensor(dtype=torch.float32) - the input sequence, specifically of shape (None, NUM_REACTIVITIES)
+        - inputs: tensor(dtype=torch.float32) - the input sequence, specifically of shape (341, 768)
         - bpp: tensor(dtype=torch.float32)
         - outputs: tensor(dtype=torch.float32) - the expected reactivities. Note that a simple MAE or MSE loss will not
             suffice for training models on this dataset. Please use the output_masks tensor as well.
@@ -330,9 +319,10 @@ def preprocess_csv(
 
     # load dataset and map it to our preprocess function
     if samples > 0:
-        ds = Dataset.from_csv(file_name).select(range(samples))
+        ds = Dataset.from_csv(file_name, cache_dir="./cache")
+        ds = ds.select(random.sample(range(0, len(ds)), samples))
     else:
-        ds = Dataset.from_csv(file_name)
+        ds = Dataset.from_csv(file_name, cache_dir="./cache")
     ds=ds.map(lambda row: map_fn(row), num_proc=n_proc)
     ds=ds.map(emb_fn, num_proc=1)
 

@@ -33,7 +33,7 @@ class BaselineModel(torch.nn.Module):
         super(BaselineModel, self).__init__()
         self.proj = torch.nn.Linear(256, 128).to(device)
         self.preLayer_a = torch.nn.Linear(768, 128).to(device)
-        self.preLayer_b = torch.nn.Linear(341, 128).to(device)
+        self.preLayer_b = torch.nn.Linear(915, 128).to(device)
         self.preLayer_c = torch.nn.Linear(3, 128).to(device)
         self.preLayer_d = torch.nn.Linear(457, 128).to(device)
 
