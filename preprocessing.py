@@ -2,6 +2,7 @@
 import numpy as np
 from tqdm import tqdm
 from datasets import Dataset, Array2D
+from random import sample
 from constants import NUM_REACTIVITIES, NUM_BPP
 import os
 
@@ -235,7 +236,8 @@ def process_data_test(row):
 def preprocess_csv(
     out: str,
     file_name: str,
-    n_proc: int = 56,
+    n_proc: int = 12,
+    samples: int = -1,
     map_fn: Callable = process_data,
     extra_cols_to_keep: List[str] = [],
     force: bool = False,
@@ -277,10 +279,12 @@ def preprocess_csv(
     ] + extra_cols_to_keep
 
     # load dataset and map it to our preprocess function
-    ds = (
-        Dataset.from_csv(file_name)
-        .map(map_fn, num_proc=n_proc, load_from_cache_file=not force)
-        .cast_column("bpp", Array2D(shape=(NUM_REACTIVITIES, NUM_BPP), dtype="float32"))
+    ds = Dataset.from_csv(file_name)
+    if samples > 0:
+        ds = ds.select(sample(range(len(ds)), samples))
+
+    ds = ds.map(map_fn, num_proc=n_proc, load_from_cache_file=not force).cast_column(
+        "bpp", Array2D(shape=(NUM_REACTIVITIES, NUM_BPP), dtype="float32")
     )
 
     # drop excess columns and save to disk

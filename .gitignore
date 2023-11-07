@@ -3,10 +3,11 @@
 train_data*
 test*
 submission*
-*_model
+*_model.pt
 tmp/
 runs/
 arnie/
 contrafold/
 LinearPartition/
 stanford/
+__pycache__/

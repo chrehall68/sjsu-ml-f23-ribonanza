@@ -1,4 +1,5 @@
 # imports
+from typing import Callable
 import torch
 from torch.utils.tensorboard.writer import SummaryWriter
 import torch.utils.data as data
@@ -9,7 +10,6 @@ import os
 from constants import NUM_BPP, NUM_REACTIVITIES
 
 # used for better attention mechanisms
-import xformers.components.positional_embedding as embeddings
 import xformers.components.attention as attentions
 import xformers.components.attention.utils as att_utils
 import xformers.components as components
@@ -30,7 +30,7 @@ print(DEVICE)
 class CustomTransformerEncoderLayer(torch.nn.Module):
     def __init__(
         self,
-        attention: components.Attention,
+        att_factory: Callable[[], components.Attention],
         latent_dim: int,
         ff_dim: int,
         n_heads: int,
@@ -40,7 +40,11 @@ class CustomTransformerEncoderLayer(torch.nn.Module):
     ) -> None:
         super(CustomTransformerEncoderLayer, self).__init__()
         self.attention = components.MultiHeadDispatch(
-            dim_model=latent_dim, num_heads=n_heads, attention=attention, **kwargs
+            dim_model=latent_dim,
+            num_heads=n_heads,
+            attention=att_factory(),
+            use_rotary_embeddings=True,
+            **kwargs,
         ).to(device)
         self.layer_norm = torch.nn.LayerNorm(latent_dim).to(device)
 
@@ -50,7 +54,10 @@ class CustomTransformerEncoderLayer(torch.nn.Module):
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor):
         # MHA self attention, add, norm
-        x = self.layer_norm(self.attention(x, att_mask=attention_mask) + x)
+        if self.attention.attention.supports_attention_mask:
+            x = self.layer_norm(self.attention(x, att_mask=attention_mask) + x)
+        else:
+            x = self.layer_norm(self.attention(x) + x)
 
         # ff, add, norm
         x = self.layer_norm(self.gelu(self.ff2(self.gelu(self.ff1(x)))) + x)
@@ -61,7 +68,7 @@ class CustomTransformerEncoderLayer(torch.nn.Module):
 class CustomTransformerDecoderLayer(torch.nn.Module):
     def __init__(
         self,
-        attention: components.Attention,
+        att_factory: Callable[[], components.Attention],
         latent_dim: int,
         ff_dim: int,
         n_heads: int,
@@ -71,11 +78,19 @@ class CustomTransformerDecoderLayer(torch.nn.Module):
     ) -> None:
         super(CustomTransformerDecoderLayer, self).__init__()
         self.crossattention = components.MultiHeadDispatch(
-            dim_model=latent_dim, num_heads=n_heads, attention=attention, **kwargs
+            dim_model=latent_dim,
+            num_heads=n_heads,
+            attention=att_factory(),
+            use_rotary_embeddings=True,
+            **kwargs,
         ).to(device)
 
         self.selfattention = components.MultiHeadDispatch(
-            dim_model=latent_dim, num_heads=n_heads, attention=attention, **kwargs
+            dim_model=latent_dim,
+            num_heads=n_heads,
+            attention=att_factory(),
+            use_rotary_embeddings=True,
+            **kwargs,
         ).to(device)
         self.layer_norm = torch.nn.LayerNorm(latent_dim).to(device)
 
@@ -85,13 +100,21 @@ class CustomTransformerDecoderLayer(torch.nn.Module):
 
     def forward(self, x: torch.Tensor, ctx: torch.Tensor, attention_mask: torch.Tensor):
         # MHA self attention, add norm
-        x = self.layer_norm(self.selfattention(x) + x)
+        if self.selfattention.attention.supports_attention_mask:
+            x = self.layer_norm(self.selfattention(x, att_mask=attention_mask) + x)
+        else:
+            x = self.layer_norm(self.selfattention(x) + x)
 
         # MHA cross attention, add, norm
-        x = self.layer_norm(
-            self.crossattention(key=ctx, query=ctx, value=x, att_mask=attention_mask)
-            + x
-        )
+        if self.crossattention.attention.supports_attention_mask:
+            x = self.layer_norm(
+                self.crossattention(
+                    key=ctx, query=ctx, value=x, att_mask=attention_mask
+                )
+                + x
+            )
+        else:
+            x = self.layer_norm(self.crossattention(key=ctx, query=ctx, value=x) + x)
 
         # ff, add, norm
         x = self.layer_norm(self.gelu(self.ff2(self.gelu(self.ff1(x)))) + x)
@@ -102,7 +125,7 @@ class CustomTransformerDecoderLayer(torch.nn.Module):
 class CustomTransformerEncoder(torch.nn.Module):
     def __init__(
         self,
-        attention_type: components.Attention,
+        att_factory: Callable[[], components.Attention],
         n_layers: int,
         latent_dim: int,
         ff_dim: int,
@@ -115,7 +138,7 @@ class CustomTransformerEncoder(torch.nn.Module):
             self.add_module(
                 str(i),
                 CustomTransformerEncoderLayer(
-                    attention=attention_type,
+                    att_factory=att_factory,
                     latent_dim=latent_dim,
                     ff_dim=ff_dim,
                     n_heads=n_heads,
@@ -133,7 +156,7 @@ class CustomTransformerEncoder(torch.nn.Module):
 class CustomTransformerDecoder(torch.nn.Module):
     def __init__(
         self,
-        attention_type: components.Attention,
+        att_factory: Callable[[], components.Attention],
         n_layers: int,
         latent_dim: int,
         ff_dim: int,
@@ -146,7 +169,7 @@ class CustomTransformerDecoder(torch.nn.Module):
             self.add_module(
                 str(i),
                 CustomTransformerDecoderLayer(
-                    attention=attention_type,
+                    att_factory=att_factory,
                     latent_dim=latent_dim,
                     ff_dim=ff_dim,
                     n_heads=n_heads,
@@ -164,12 +187,12 @@ class CustomTransformerDecoder(torch.nn.Module):
 class AttentionModel(torch.nn.Module):
     def __init__(
         self,
-        attention_type: attentions.Attention = attentions.ScaledDotProduct(dropout=0.1),
-        latent_dim: int = 128,
-        ff_dim: int = 1024,
-        n_heads: int = 2,
-        enc_layers: int = 1,
-        dec_layers: int = 1,
+        att_factory: attentions.Attention,
+        latent_dim: int,
+        ff_dim: int,
+        n_heads: int,
+        enc_layers: int,
+        dec_layers: int,
         device: str = DEVICE,
     ) -> None:
         super(AttentionModel, self).__init__()
@@ -181,7 +204,6 @@ class AttentionModel(torch.nn.Module):
         self.proj = torch.nn.Linear(NUM_BPP + 1, latent_dim).to(device)
 
         # positional embedding encoder/decoder layers
-        self.pos_embedding = embeddings.SinePositionalEmbedding(latent_dim).to(device)
         self.has_encoder = enc_layers >= 1
         self.has_decoder = dec_layers >= 1
         if self.has_encoder:
@@ -190,7 +212,7 @@ class AttentionModel(torch.nn.Module):
                 ff_dim=ff_dim,
                 n_heads=n_heads,
                 device=device,
-                attention_type=attention_type,
+                att_factory=att_factory,
                 n_layers=enc_layers,
             )
         if self.has_decoder:
@@ -198,7 +220,7 @@ class AttentionModel(torch.nn.Module):
                 latent_dim=latent_dim,
                 ff_dim=ff_dim,
                 n_heads=n_heads,
-                attention_type=attention_type,
+                att_factory=att_factory,
                 n_layers=dec_layers,
             )
 
@@ -230,7 +252,6 @@ class AttentionModel(torch.nn.Module):
         x = self.proj(torch.concat([tokens.unsqueeze(-1), bpp], dim=-1))
 
         # add sinusoidal embedding and then perform attention
-        x = self.pos_embedding(x)
         if self.has_decoder and self.has_encoder:
             x = self.decoder_layers(
                 x, ctx=self.encoder_layers(x, attention_mask=mask), attention_mask=mask
@@ -321,22 +342,27 @@ def noupdate_batch(
 def masked_train(
     m: torch.nn.Module,
     m_optim: torch.optim.Optimizer,
+    m_sched: torch.optim.lr_scheduler.LRScheduler,
     train_dataloader: data.DataLoader,
     val_dataloader: data.DataLoader,
     writer: SummaryWriter,
     model_name: str,
     epochs: int = 1,
-    device: str = DEVICE,
+    device: torch.device = DEVICE,
 ):
     """
     Train the given model.
 
     Arguments:
         - m: torch.nn.Module - the model to train.
+        - m_optim: torch.optim.Optimizer - the optimizer to use for the model
+        - m_sched: torch.optim.lr_scheduler.LRScheduler - the scheduler to use to adjust the lr
         - train_dataloader: data.Dataloader - the dataloader that provides the batched training data
         - val_dataloader: data.Dataloader - the dataloader that provides the batched validation data
+        - writer: SummaryWriter - the summary writer to use for tensorboard logging
+        - model_name: str - the name of the model (what to save it as)
         - epochs: int - how many epochs to train for. Defaults to `1`.
-        - device: str - the device to train on, defaults to `DEVICE`
+        - device: torch.device - the device to train on, defaults to `DEVICE`
     """
     m = m.to(device)
 
@@ -393,22 +419,65 @@ def masked_train(
         val_mae /= len(val_dataloader)
 
         print(
-            f"Epoch MAE: {epoch_mae:.5f}\tEpoch Weighted MAE: {epoch_weighted_mae:.5f}\t"
-            + f"Val MAE: {val_mae:.5f}\tVal Weighted MAE: {val_weighted_mae:.5f}"
+            f"Epoch MAE: {epoch_mae:.5f}\tEpoch WMAE: {epoch_weighted_mae:.5f}\t"
+            + f"Val MAE: {val_mae:.5f}\tVal WMAE: {val_weighted_mae:.5f}"
         )
 
+        # log to tensorboard
         writer.add_scalar("epoch_mae", epoch_mae, global_step=epoch)
+        writer.add_scalar("epoch_wmae", epoch_weighted_mae, global_step=epoch)
         writer.add_scalar("val_mae", val_mae, global_step=epoch)
+        writer.add_scalar("val_wmae", val_weighted_mae, global_step=epoch)
+        writer.add_scalar("lr", m_sched.get_last_lr()[0], global_step=epoch)
 
         # save every epoch
         torch.save(m.state_dict(), f"{model_name}_model.pt")
+
+        # update lr
+        m_sched.step()
+
+
+def create_scaled_dot_product_attention(dropout: float = 0.1) -> attentions.Attention:
+    """
+    Factory for creating ScaledDotProduct attention
+
+    Arguments:
+        - dropout: float - dropout to use for the attention. Defaults to 0.1
+    """
+    return attentions.ScaledDotProduct(dropout=dropout)
+
+
+def create_global_attention(dropout: float = 0.1) -> attentions.Attention:
+    """
+    Factory for creating GlobalAttention
+
+    Arguments:
+        - dropout: float - dropout to use for the attention. Defaults to 0.1
+    """
+    ret = attentions.GlobalAttention(
+        dropout=dropout,
+        attention_query_mask=torch.ones((NUM_REACTIVITIES, 1), dtype=torch.bool),
+    )
+    ret.supports_attention_mask = True
+    return ret
+
+
+def create_lin_attention(dropout: float = 0.1) -> attentions.Attention:
+    """
+    Factory for creating LinFormerAttention
+
+    Arguments:
+        - dropout: float - dropout to use for the attention. Defaults to 0.1
+    """
+    return attentions.LinformerAttention(dropout=dropout, seq_len=NUM_REACTIVITIES)
 
 
 def train(
     run_name: str,
     dataset_name: str,
     lr: float = 3e-4,
-    batch_size: int = 64,
+    scheduler: str = "cosine",
+    batch_size: int = 32,
     val_split: float = 0.1,
     epochs: int = 10,
     model_dict: dict = dict(
@@ -418,6 +487,9 @@ def train(
         dec_layers=4,
         ff_dim=2048,
     ),
+    att_factory: Callable[
+        [], attentions.Attention
+    ] = create_scaled_dot_product_attention,
 ):
     """
     Train a model from start to finish, taking care of data loading,
@@ -427,11 +499,13 @@ def train(
         - run_name: str - the name of the run to log as
         - dataset_name: str - the name of the dataset, either "2a3" or "dms"
         - lr: float - the learning rate to use. Defaults to 3e-4
+        - scheduler: str - the scheduler to use. Only 'cosine' causes a difference
         - batch_size: int - the batch size to use when training and running validation. Defaults to 64
         - val_split: float - the size of the validation, from 0 to 1. Defaults to 0.1
         - epochs: int - the number of epochs to train for. Defaults to 10
         - model_dict: dict - a dictionary containing all the arguments to be passed when instantiating
             the `AttentionModel`
+        - att_factory: Callable[[], attentions.Attention] - factory that produces the attention type
     """
     # load and process dataset
     columns = ["inputs", "outputs", "output_masks", "bpp"]
@@ -460,9 +534,16 @@ def train(
     # create logger
     writer = SummaryWriter(f"runs/{run_name}")
 
-    # create model + optimizer
-    model = AttentionModel(**model_dict).to(DEVICE)
+    # create model + optimizer + scheduler
+    model = AttentionModel(
+        **model_dict,
+        att_factory=att_factory,
+    ).to(DEVICE)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    if scheduler == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    else:
+        scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
 
     # load old weights if possible
     if os.path.exists(f"{dataset_name}_model.pt"):
@@ -482,6 +563,7 @@ def train(
     masked_train(
         model,
         optimizer,
+        scheduler,
         train_dataloader,
         val_dataloader,
         writer=writer,
