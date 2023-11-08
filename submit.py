@@ -1,9 +1,11 @@
-from models import DEVICE, AttentionModel
+from models import DEVICE, AttentionModel, create_scaled_dot_product_attention
 import torch
 import torch.utils.data as data
 from tqdm import tqdm
 from datasets import Dataset
 import os
+import xformers.components.attention as attention
+from typing import Callable
 
 
 def pipeline(
@@ -12,6 +14,7 @@ def pipeline(
     input_ds: str,
     out: str,
     batch_size: int,
+    dtype: torch.dtype,
 ):
     """
     Make predictions on the test dataset and write them to a csv file
@@ -36,15 +39,15 @@ def pipeline(
         for _ in tqdm(range(len(loader))):
             # get the next group of data
             tdata = next(iterable)
-            tokens = tdata["inputs"].to(DEVICE)
-            bpp = tdata["bpp"].to(DEVICE)
+            tokens = tdata["inputs"].to(DEVICE, dtype)
+            bpp = tdata["bpp"].to(DEVICE, dtype)
             min_ids = tdata["id_min"].numpy()
             max_ids = tdata["id_max"].numpy()
 
             # make predictions w/o gradients
             with torch.no_grad():
-                preds_2a3 = model_2a3(tokens, bpp).cpu().numpy()
-                preds_dms = model_dms(tokens, bpp).cpu().numpy()
+                preds_2a3 = model_2a3(tokens, bpp).to(torch.float32).cpu().numpy()
+                preds_dms = model_dms(tokens, bpp).to(torch.float32).cpu().numpy()
 
             # write preds
             for i in range(tokens.shape[0]):
@@ -66,6 +69,9 @@ def submit(
         dec_layers=4,
         ff_dim=2048,
     ),
+    model_2a3_att_factory: Callable[
+        [], attention.Attention
+    ] = create_scaled_dot_product_attention,
     model_dms_dict: dict = dict(
         latent_dim=32,
         n_heads=1,
@@ -73,6 +79,10 @@ def submit(
         dec_layers=4,
         ff_dim=2048,
     ),
+    model_dms_att_factory: Callable[
+        [], attention.Attention
+    ] = create_scaled_dot_product_attention,
+    dtype: torch.dtype = torch.float32,
 ):
     """
     Generate a submission.csv.zip file for submitting
@@ -85,16 +95,16 @@ def submit(
             the dms `AttentionModel`
     """
     # initialize models
-    model_2a3 = AttentionModel(**model_2a3_dict)
-    model_dms = AttentionModel(**model_dms_dict)
+    model_2a3 = AttentionModel(**model_2a3_dict, att_factory=model_2a3_att_factory)
+    model_dms = AttentionModel(**model_dms_dict, att_factory=model_dms_att_factory)
 
     # load weights
     model_2a3.load_state_dict(torch.load("2a3_model.pt"))
     model_dms.load_state_dict(torch.load("dms_model.pt"))
 
     # set in evaluation mode and move to device
-    model_2a3.eval().to(DEVICE)
-    model_dms.eval().to(DEVICE)
+    model_2a3.eval().to(DEVICE, dtype)
+    model_dms.eval().to(DEVICE, dtype)
 
     pipeline(
         model_2a3,
@@ -102,6 +112,7 @@ def submit(
         "test_data_preprocessed",
         "submission.csv",
         batch_size=batch_size,
+        dtype=dtype,
     )
 
     # zip our submission into an easily-uploadable zip file

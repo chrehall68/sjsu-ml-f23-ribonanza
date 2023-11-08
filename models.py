@@ -316,7 +316,10 @@ def train_batch(
         unweighted_loss = unweightedL1(preds, outs, masks)
 
     # return weighted and unweighted mae loss
-    return weighted_loss.detach().cpu(), unweighted_loss.detach().cpu()
+    return (
+        weighted_loss.to(torch.float32).detach().cpu(),
+        unweighted_loss.to(torch.float32).detach().cpu(),
+    )
 
 
 def noupdate_batch(
@@ -336,7 +339,10 @@ def noupdate_batch(
         unweighted_loss = unweightedL1(preds, outs, masks)
 
     # return weighted and unweighted mae loss
-    return weighted_loss.cpu(), unweighted_loss.cpu()
+    return (
+        weighted_loss.to(torch.float32).cpu(),
+        unweighted_loss.to(torch.float32).cpu(),
+    )
 
 
 def masked_train(
@@ -349,6 +355,7 @@ def masked_train(
     model_name: str,
     epochs: int = 1,
     device: torch.device = DEVICE,
+    dtype: torch.dtype = torch.float32,
 ):
     """
     Train the given model.
@@ -363,8 +370,9 @@ def masked_train(
         - model_name: str - the name of the model (what to save it as)
         - epochs: int - how many epochs to train for. Defaults to `1`.
         - device: torch.device - the device to train on, defaults to `DEVICE`
+        - dtype: torch.dtype - the dtype to use for training
     """
-    m = m.to(device)
+    m = m.to(device, dtype)
 
     for epoch in range(1, epochs + 1):
         print(f"Epoch {epoch}")
@@ -378,10 +386,10 @@ def masked_train(
             outs = tdata["outputs"]
             masks = tdata["output_masks"]
 
-            tokens = tokens.to(device)
-            bpp = bpp.to(device)
-            outs = outs.to(device)
-            masks = masks.to(device)
+            tokens = tokens.to(device, dtype)
+            bpp = bpp.to(device, dtype)
+            outs = outs.to(device, dtype)
+            masks = masks.to(device, dtype)
 
             weighted_mae, mae = train_batch(m, tokens, bpp, outs, masks, m_optim)
 
@@ -407,10 +415,10 @@ def masked_train(
             outs = vdata["outputs"]
             masks = vdata["output_masks"]
 
-            tokens = tokens.to(device)
-            bpp = bpp.to(device)
-            outs = outs.to(device)
-            masks = masks.to(device)
+            tokens = tokens.to(device, dtype)
+            bpp = bpp.to(device, dtype)
+            outs = outs.to(device, dtype)
+            masks = masks.to(device, dtype)
             weighted_mae, mae = noupdate_batch(m, tokens, bpp, outs, masks)
 
             val_weighted_mae += weighted_mae
@@ -490,6 +498,7 @@ def train(
     att_factory: Callable[
         [], attentions.Attention
     ] = create_scaled_dot_product_attention,
+    dtype: torch.dtype = torch.float32,
 ):
     """
     Train a model from start to finish, taking care of data loading,
@@ -538,7 +547,7 @@ def train(
     model = AttentionModel(
         **model_dict,
         att_factory=att_factory,
-    ).to(DEVICE)
+    ).to(DEVICE, dtype)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     if scheduler == "cosine":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
@@ -569,4 +578,5 @@ def train(
         writer=writer,
         model_name=dataset_name,
         epochs=epochs,
+        dtype=dtype,
     )

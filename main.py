@@ -7,6 +7,7 @@ from preprocessing import (
 )
 from models import train, create_lin_attention
 from submit import submit
+from torch import bfloat16
 
 if __name__ == "__main__":
     # filter out data
@@ -26,8 +27,23 @@ if __name__ == "__main__":
     )
 
     # train models
-    train("2a3_linearfold", dataset_name="2a3", att_factory=create_lin_attention)
-    train("dms_linearfold", dataset_name="dms", att_factory=create_lin_attention)
+    train(
+        "2a3_linearfold",
+        dataset_name="2a3",
+        att_factory=create_lin_attention,
+        dtype=bfloat16,
+    )
+    train(
+        "dms_linearfold",
+        dataset_name="dms",
+        att_factory=create_lin_attention,
+        dtype=bfloat16,
+    )
 
     # submit predictions
-    submit(batch_size=64)
+    submit(
+        batch_size=64,
+        dtype=bfloat16,
+        model_2a3_att_factory=create_lin_attention,
+        model_dms_att_factory=create_lin_attention,
+    )
