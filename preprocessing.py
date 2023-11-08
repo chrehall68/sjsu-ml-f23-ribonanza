@@ -1,7 +1,7 @@
 # imports
 import numpy as np
 from tqdm import tqdm
-from datasets import Dataset, Array2D
+from datasets import Dataset, Array2D, load_dataset
 from random import sample
 from constants import NUM_REACTIVITIES, NUM_BPP
 import os
@@ -268,6 +268,14 @@ def preprocess_csv(
     if os.path.exists(out) and not force:
         print("File already exists, not doing any work.\n")
         return
+    if not os.path.exists(out) and not force:
+        print("Retriving dataset from hub")
+        try:
+            ds = load_dataset(f"chreh/{out}")["train"]
+            ds.save_to_disk(f"{out}")
+            return
+        except:
+            print("Could not locate dataset. Running preprocessing locally instead.")
 
     names_to_keep = [
         "reactivity_errors",
