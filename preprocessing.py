@@ -3,15 +3,22 @@ import numpy as np
 from tqdm import tqdm
 from datasets import Dataset, Array2D, load_dataset
 from random import sample
-from constants import NUM_REACTIVITIES, NUM_BPP
+from constants import NUM_REACTIVITIES, NUM_BPP, NUM_BASES, NUM_CAPR, NUM_STRUCT
 import os
 
 # typing hints
 from typing import List
 from collections.abc import Callable
 
-# used for bpps
+# used for CapR
+import pandas as pd
+import subprocess
+import uuid
+
+# used for bpps and mfe
 from arnie.bpps import bpps
+from arnie.mfe import mfe
+from arnie.mea.mea import MEA
 
 
 # encode inputs as
@@ -20,11 +27,12 @@ from arnie.bpps import bpps
 # C : 3
 # G : 4
 base_map = {
-    "A": 1,
-    "U": 2,
-    "C": 3,
-    "G": 4,
+    "A": [1, 0, 0, 0],
+    "U": [0, 1, 0, 0],
+    "C": [0, 0, 1, 0],
+    "G": [0, 0, 0, 1],
 }
+mfe_map = {"(": [1, 0, 0], ".": [1, 1, 0], ")": [0, 0, 1]}
 
 
 def filter_data(out: str, key: str, value: str, file_name: str, force: bool):
@@ -117,6 +125,36 @@ def filter_DMS(force: bool = False):
     )
 
 
+def run_CapR(rna_id, rna_string, max_seq_len=1024):
+    in_file = "%s.fa" % rna_id
+    out_file = "%s.out" % rna_id
+
+    fp = open(in_file, "w")
+    fp.write(">%s\n" % rna_id)
+    fp.write(rna_string)
+    fp.close()
+
+    subprocess.run(
+        "CapR %s %s %d" % (in_file, out_file, max_seq_len),
+        shell=True,
+        capture_output=False,
+    )
+
+    df = pd.read_csv(
+        out_file,
+        skiprows=1,
+        header=None,
+        delim_whitespace=True,
+    )
+    df2 = df.T[1:]
+    df2.columns = df.T.iloc[0].values
+
+    os.remove(f"./{in_file}")
+    os.remove(f"./{out_file}")
+
+    return df2
+
+
 def process_data(row):
     """
     Convert a row containing all csv columns in the original dataset
@@ -130,8 +168,11 @@ def process_data(row):
     """
     # initialize arrays
     # note that we assume everything is masked until told otherwise
-    inputs = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
+    bases = np.zeros((NUM_REACTIVITIES, NUM_BASES), dtype=np.float32)
     bpp = np.zeros((NUM_REACTIVITIES, NUM_BPP), dtype=np.float32)
+    mfe_structure = np.zeros((NUM_REACTIVITIES, NUM_STRUCT * NUM_BPP), dtype=np.float32)
+    capr = np.zeros((NUM_REACTIVITIES, NUM_CAPR), dtype=np.float32)
+
     output_masks = np.ones((NUM_REACTIVITIES,), dtype=np.bool_)
     reactivity_errors = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
     reactivities = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
@@ -139,17 +180,42 @@ def process_data(row):
     seq_len = len(row["sequence"])
 
     # encode the bases
-    inputs[:seq_len] = np.array(
+    bases[:seq_len] = np.array(
         list(map(lambda letter: base_map[letter], row["sequence"]))
     )
 
     # get the probability that any of those bases are paired
-    bpp[:seq_len, 0] = np.sum(
-        bpps(row["sequence"], package="contrafold", linear=True, threshknot=True),
-        axis=-1,
-    )
-    bpp[:seq_len, 1] = np.sum(bpps(row["sequence"], package="contrafold"), axis=-1)
-    bpp[:seq_len, 2] = np.sum(bpps(row["sequence"], package="eternafold"), axis=-1)
+    bpp_lst = [
+        bpps(row["sequence"], package="contrafold_2", linear=True, threshknot=True),
+        bpps(row["sequence"], package="eternafold", linear=True),
+    ]
+
+    # save the sums
+    for i, bpp_ in enumerate(bpp_lst):
+        bpp[:seq_len, i] = np.sum(bpp_, axis=-1)
+
+    # get the mfe structure
+    mfe_lst = [
+        mfe(row["sequence"], package="contrafold_2", linear=True, threshknot=True),
+        mfe(row["sequence"], package="eternafold", linear=True),
+    ]
+    for i, mfe_ in enumerate(mfe_lst):
+        mfe_structure[:seq_len, i * 3 : i * 3 + 3] = np.array(
+            list(
+                map(
+                    lambda letter: mfe_map[letter],
+                    mfe_,
+                )
+            )
+        )
+
+    capr_df = run_CapR("./tmp/" + str(uuid.uuid4()), row["sequence"], NUM_REACTIVITIES)
+    capr[:seq_len, 0] = np.array(capr_df["Bulge"], dtype=np.float32)
+    capr[:seq_len, 1] = np.array(capr_df["Exterior"], dtype=np.float32)
+    capr[:seq_len, 2] = np.array(capr_df["Hairpin"], dtype=np.float32)
+    capr[:seq_len, 3] = np.array(capr_df["Internal"], dtype=np.float32)
+    capr[:seq_len, 4] = np.array(capr_df["Multibranch"], dtype=np.float32)
+    capr[:seq_len, 5] = np.array(capr_df["Stem"], dtype=np.float32)
 
     # get the reactivities and their errors
     reactivities[:seq_len] = np.array(
@@ -192,8 +258,10 @@ def process_data(row):
 
     # store the values
     row = {}
-    row["inputs"] = inputs
+    row["bases"] = bases
     row["bpp"] = bpp
+    row["mfe"] = mfe_structure
+    row["capr"] = capr
     row["outputs"] = np.clip(reactivities, 0, 1)
     row["output_masks"] = np.clip(
         np.where(output_masks, 0.0, 1.0) - np.abs(reactivity_errors), 0, 1
@@ -210,25 +278,67 @@ def process_data_test(row):
     """
     # initialize arrays
     # note that we assume everything is masked until told otherwise
-    inputs = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
+    bases = np.zeros((NUM_REACTIVITIES, NUM_BASES), dtype=np.float32)
     bpp = np.zeros((NUM_REACTIVITIES, NUM_BPP), dtype=np.float32)
+    mfe_structure = np.zeros((NUM_REACTIVITIES, NUM_STRUCT * NUM_BPP), dtype=np.float32)
+    capr = np.zeros((NUM_REACTIVITIES, NUM_CAPR), dtype=np.float32)
 
     seq_len = len(row["sequence"])
 
     # encode the bases
-    inputs[:seq_len] = np.array(
+    bases[:seq_len] = np.array(
         list(map(lambda letter: base_map[letter], row["sequence"]))
     )
 
     # get the probability that any of those bases are paired
-    bpp[:seq_len, 0] = np.sum(
-        bpps(row["sequence"], package="contrafold", linear=True, threshknot=True),
-        axis=-1,
+    lin_bpps = bpps(
+        row["sequence"], package="contrafold_2", linear=True, threshknot=True
     )
-    bpp[:seq_len, 1] = np.sum(bpps(row["sequence"], package="contrafold"), axis=-1)
-    bpp[:seq_len, 2] = np.sum(bpps(row["sequence"], package="eternafold"), axis=-1)
+    eterna_bpps = bpps(row["sequence"], package="contrafold_2")
+    contra_bpps = bpps(row["sequence"], package="eternafold")
 
-    row["inputs"] = inputs
+    # save the sums
+    bpp[:seq_len, 0] = np.sum(lin_bpps, axis=-1)
+    bpp[:seq_len, 1] = np.sum(contra_bpps, axis=-1)
+    bpp[:seq_len, 2] = np.sum(eterna_bpps, axis=-1)
+
+    # get the mfe structure
+    mfe_structure[:seq_len, :3] = np.array(
+        list(
+            map(
+                lambda letter: mfe_map[letter],
+                MEA(lin_bpps).structure,
+            )
+        )
+    )
+    mfe_structure[:seq_len, 3:6] = np.array(
+        list(
+            map(
+                lambda letter: mfe_map[letter],
+                MEA(contra_bpps).structure,
+            )
+        )
+    )
+    mfe_structure[:seq_len, 6:9] = np.array(
+        list(
+            map(
+                lambda letter: mfe_map[letter],
+                MEA(eterna_bpps).structure,
+            )
+        )
+    )
+
+    capr_df = run_CapR("./tmp/" + str(uuid.uuid4()), row["sequence"], NUM_REACTIVITIES)
+    capr[:seq_len, 0] = np.array(capr_df["Bulge"], dtype=np.float32)
+    capr[:seq_len, 1] = np.array(capr_df["Exterior"], dtype=np.float32)
+    capr[:seq_len, 2] = np.array(capr_df["Hairpin"], dtype=np.float32)
+    capr[:seq_len, 3] = np.array(capr_df["Internal"], dtype=np.float32)
+    capr[:seq_len, 4] = np.array(capr_df["Multibranch"], dtype=np.float32)
+    capr[:seq_len, 5] = np.array(capr_df["Stem"], dtype=np.float32)
+
+    row["bases"] = bases
+    row["mfe"] = mfe_structure
+    row["capr"] = capr
     row["bpp"] = bpp
     return row
 
@@ -281,9 +391,11 @@ def preprocess_csv(
         "reactivity_errors",
         "bool_output_masks",
         "output_masks",
-        "inputs",
-        "outputs",
+        "bases",
         "bpp",
+        "mfe",
+        "capr",
+        "outputs",
     ] + extra_cols_to_keep
 
     # load dataset and map it to our preprocess function
@@ -291,8 +403,19 @@ def preprocess_csv(
     if samples > 0:
         ds = ds.select(sample(range(len(ds)), samples))
 
-    ds = ds.map(map_fn, num_proc=n_proc, load_from_cache_file=not force).cast_column(
-        "bpp", Array2D(shape=(NUM_REACTIVITIES, NUM_BPP), dtype="float32")
+    ds = (
+        ds.map(map_fn, num_proc=n_proc, load_from_cache_file=not force)
+        .cast_column(
+            "bases", Array2D(shape=(NUM_REACTIVITIES, NUM_BASES), dtype="float32")
+        )
+        .cast_column("bpp", Array2D(shape=(NUM_REACTIVITIES, NUM_BPP), dtype="float32"))
+        .cast_column(
+            "mfe",
+            Array2D(shape=(NUM_REACTIVITIES, NUM_STRUCT * NUM_BPP), dtype="float32"),
+        )
+        .cast_column(
+            "capr", Array2D(shape=(NUM_REACTIVITIES, NUM_CAPR), dtype="float32")
+        )
     )
 
     # drop excess columns and save to disk

@@ -201,7 +201,7 @@ class AttentionModel(torch.nn.Module):
         self.n_heads = n_heads
         self.latent_dim = latent_dim
 
-        self.proj = torch.nn.Linear(NUM_BPP + 1, latent_dim).to(device)
+        self.proj = torch.nn.Linear(NUM_BPP * 4 + 6 + 4, latent_dim).to(device)
 
         # positional embedding encoder/decoder layers
         self.has_encoder = enc_layers >= 1
@@ -231,25 +231,32 @@ class AttentionModel(torch.nn.Module):
         )
 
         # activations
-        self.relu = torch.nn.ReLU()
         self.gelu = torch.nn.GELU()
 
-    def forward(self, tokens: torch.Tensor, bpp: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        bases: torch.Tensor,
+        bpp: torch.Tensor,
+        mfe: torch.Tensor,
+        capr: torch.Tensor,
+    ) -> torch.Tensor:
         """
         Arguments:
-            - tokens: torch.Tensor - should have shape B,457
-            - bpp: torch.Tensor - should have shape B,457
+            - bases: torch.Tensor - should have shape B,457,4
+            - bpp: torch.Tensor - should have shape B,457,NUM_BPP
+            - mfe: torch.Tensor - B,457,3*NUM_BPP
+            - capr: torch.Tensor - B,457,6
         """
         mask = att_utils.maybe_merge_masks(
             att_mask=None,
-            key_padding_mask=tokens != 0,
-            batch_size=tokens.shape[0],
+            key_padding_mask=bases.any(dim=-1) != 0,
+            batch_size=bases.shape[0],
             num_heads=self.n_heads,
             src_len=NUM_REACTIVITIES,
         )
 
         # project inputs and bpp to latent_dim
-        x = self.proj(torch.concat([tokens.unsqueeze(-1), bpp], dim=-1))
+        x = self.gelu(self.proj(torch.concat([bases, bpp, mfe, capr], dim=-1)))
 
         # add sinusoidal embedding and then perform attention
         if self.has_decoder and self.has_encoder:
@@ -262,7 +269,7 @@ class AttentionModel(torch.nn.Module):
             x = self.decoder_layers(x, ctx=x, attention_mask=mask)
 
         # final result
-        x = self.relu(self.final_result(self.gelu(self.head(x).flatten(start_dim=1))))
+        x = self.gelu(self.head(x).flatten(start_dim=1))
         return x
 
 
@@ -292,8 +299,10 @@ def weightedL1(
 
 def train_batch(
     m: torch.nn.Module,
-    tokens: torch.Tensor,
+    bases: torch.Tensor,
     bpp: torch.Tensor,
+    mfe: torch.Tensor,
+    capr: torch.Tensor,
     outs: torch.Tensor,
     masks: torch.Tensor,
     m_optim: torch.optim.Optimizer,
@@ -303,7 +312,7 @@ def train_batch(
     Used for training purposes
     """
     m_optim.zero_grad()
-    preds = m(tokens, bpp)
+    preds = m(bases, bpp, mfe, capr)
 
     # get the weighted mae
     weighted_loss = weightedL1(preds, outs, masks)
@@ -324,8 +333,10 @@ def train_batch(
 
 def noupdate_batch(
     m: torch.nn.Module,
-    tokens: torch.Tensor,
+    bases: torch.Tensor,
     bpp: torch.Tensor,
+    mfe: torch.Tensor,
+    capr: torch.Tensor,
     outs: torch.Tensor,
     masks: torch.Tensor,
 ):
@@ -334,7 +345,7 @@ def noupdate_batch(
     Used for validation purposes
     """
     with torch.no_grad():
-        preds = m(tokens, bpp)
+        preds = m(bases, bpp, mfe, capr)
         weighted_loss = weightedL1(preds, outs, masks)
         unweighted_loss = unweightedL1(preds, outs, masks)
 
@@ -381,17 +392,25 @@ def masked_train(
 
         m = m.train()
         for tdata in (prog := tqdm(train_dataloader, desc="batch")):
-            tokens = tdata["inputs"]
+            bases = tdata["bases"]
             bpp = tdata["bpp"]
+            mfe = tdata["mfe"]
+            capr = tdata["capr"]
+
             outs = tdata["outputs"]
             masks = tdata["output_masks"]
 
-            tokens = tokens.to(device, dtype)
+            bases = bases.to(device, dtype)
             bpp = bpp.to(device, dtype)
+            mfe = mfe.to(device, dtype)
+            capr = capr.to(device, dtype)
+
             outs = outs.to(device, dtype)
             masks = masks.to(device, dtype)
 
-            weighted_mae, mae = train_batch(m, tokens, bpp, outs, masks, m_optim)
+            weighted_mae, mae = train_batch(
+                m, bases, bpp, mfe, capr, outs, masks, m_optim
+            )
 
             epoch_weighted_mae += weighted_mae
             epoch_mae += mae
@@ -410,16 +429,20 @@ def masked_train(
         val_weighted_mae = 0.0
         m = m.eval()
         for vdata in val_dataloader:
-            tokens = vdata["inputs"]
+            bases = vdata["bases"]
             bpp = vdata["bpp"]
+            mfe = vdata["mfe"]
+            capr = vdata["capr"]
             outs = vdata["outputs"]
             masks = vdata["output_masks"]
 
-            tokens = tokens.to(device, dtype)
+            bases = bases.to(device, dtype)
             bpp = bpp.to(device, dtype)
+            mfe = mfe.to(device, dtype)
+            capr = capr.to(device, dtype)
             outs = outs.to(device, dtype)
             masks = masks.to(device, dtype)
-            weighted_mae, mae = noupdate_batch(m, tokens, bpp, outs, masks)
+            weighted_mae, mae = noupdate_batch(m, bases, bpp, mfe, capr, outs, masks)
 
             val_weighted_mae += weighted_mae
             val_mae += mae
@@ -517,7 +540,7 @@ def train(
         - att_factory: Callable[[], attentions.Attention] - factory that produces the attention type
     """
     # load and process dataset
-    columns = ["inputs", "outputs", "output_masks", "bpp"]
+    columns = ["bases", "bpp", "mfe", "capr", "outputs", "output_masks"]
 
     dataset = Dataset.load_from_disk(
         f"train_data_{dataset_name}_preprocessed"

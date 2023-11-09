@@ -39,18 +39,25 @@ def pipeline(
         for _ in tqdm(range(len(loader))):
             # get the next group of data
             tdata = next(iterable)
-            tokens = tdata["inputs"].to(DEVICE, dtype)
+            bases = tdata["bases"].to(DEVICE, dtype)
             bpp = tdata["bpp"].to(DEVICE, dtype)
+            mfe = tdata["mfe"].to(DEVICE, dtype)
+            capr = tdata["capr"].to(DEVICE, dtype)
+
             min_ids = tdata["id_min"].numpy()
             max_ids = tdata["id_max"].numpy()
 
             # make predictions w/o gradients
             with torch.no_grad():
-                preds_2a3 = model_2a3(tokens, bpp).to(torch.float32).cpu().numpy()
-                preds_dms = model_dms(tokens, bpp).to(torch.float32).cpu().numpy()
+                preds_2a3 = (
+                    model_2a3(bases, bpp, mfe, capr).to(torch.float32).cpu().numpy()
+                )
+                preds_dms = (
+                    model_dms(bases, bpp, mfe, capr).to(torch.float32).cpu().numpy()
+                )
 
             # write preds
-            for i in range(tokens.shape[0]):
+            for i in range(bases.shape[0]):
                 outfile.writelines(
                     map(
                         lambda seq_idx: f"{seq_idx},{preds_dms[i, seq_idx-min_ids[i]]:.3f},{preds_2a3[i, seq_idx-min_ids[i]]:.3f}\n",
