@@ -16,21 +16,13 @@ if __name__ == "__main__":
     filter_2A3()
 
     # preprocess csvs
-    preprocess_csv(
-        "train_data_2a3_preprocessed",
-        "train_data_2a3.csv",  # force=True, samples=1000
-    )
-    preprocess_csv(
-        "train_data_dms_preprocessed",
-        "train_data_dms.csv",  # force=True, samples=1000
-    )
+    preprocess_csv("train_data_2a3_preprocessed", "train_data_2a3.csv")
+    preprocess_csv("train_data_dms_preprocessed", "train_data_dms.csv")
     preprocess_csv(
         "test_data_preprocessed",
         "test_sequences.csv",
         map_fn=process_data_test,
         extra_cols_to_keep=["id_min", "id_max"],
-        force=True,
-        samples=1000,
     )
 
     # train models

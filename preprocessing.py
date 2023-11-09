@@ -155,39 +155,27 @@ def run_CapR(rna_id, rna_string, max_seq_len=1024):
     return df2
 
 
-def process_data(row):
+def extract_rna(row):
     """
-    Convert a row containing all csv columns in the original dataset
-    to a row containing only the columns:
-    - inputs
-    - outputs
-    - bpp
-    - output_masks
-    - reactivity_error
-    - bool_output_masks
+    Extracts relevant RNA information.
+
+    Returns (bases, bpp, mfe_structure, capr)
     """
-    # initialize arrays
-    # note that we assume everything is masked until told otherwise
     bases = np.zeros((NUM_REACTIVITIES, NUM_BASES), dtype=np.float32)
     bpp = np.zeros((NUM_REACTIVITIES, NUM_BPP), dtype=np.float32)
     mfe_structure = np.zeros((NUM_REACTIVITIES, NUM_STRUCT * NUM_BPP), dtype=np.float32)
     capr = np.zeros((NUM_REACTIVITIES, NUM_CAPR), dtype=np.float32)
 
-    output_masks = np.ones((NUM_REACTIVITIES,), dtype=np.bool_)
-    reactivity_errors = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
-    reactivities = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
-
-    seq_len = len(row["sequence"])
+    seq = row["sequence"]
+    seq_len = len(seq)
 
     # encode the bases
-    bases[:seq_len] = np.array(
-        list(map(lambda letter: base_map[letter], row["sequence"]))
-    )
+    bases[:seq_len] = np.array(list(map(lambda letter: base_map[letter], seq)))
 
     # get the probability that any of those bases are paired
     bpp_lst = [
-        bpps(row["sequence"], package="contrafold_2", linear=True, threshknot=True),
-        bpps(row["sequence"], package="eternafold", linear=True),
+        bpps(seq, package="contrafold_2", linear=True, threshknot=True),
+        bpps(seq, package="eternafold", linear=True),
     ]
 
     # save the sums
@@ -196,8 +184,8 @@ def process_data(row):
 
     # get the mfe structure
     mfe_lst = [
-        mfe(row["sequence"], package="contrafold_2", linear=True, threshknot=True),
-        mfe(row["sequence"], package="eternafold", linear=True),
+        mfe(seq, package="contrafold_2", linear=True, threshknot=True),
+        mfe(seq, package="eternafold", linear=True),
     ]
     for i, mfe_ in enumerate(mfe_lst):
         mfe_structure[:seq_len, i * 3 : i * 3 + 3] = np.array(
@@ -209,13 +197,37 @@ def process_data(row):
             )
         )
 
-    capr_df = run_CapR("./tmp/" + str(uuid.uuid4()), row["sequence"], NUM_REACTIVITIES)
+    capr_df = run_CapR("./tmp/" + str(uuid.uuid4()), seq, NUM_REACTIVITIES)
     capr[:seq_len, 0] = np.array(capr_df["Bulge"], dtype=np.float32)
     capr[:seq_len, 1] = np.array(capr_df["Exterior"], dtype=np.float32)
     capr[:seq_len, 2] = np.array(capr_df["Hairpin"], dtype=np.float32)
     capr[:seq_len, 3] = np.array(capr_df["Internal"], dtype=np.float32)
     capr[:seq_len, 4] = np.array(capr_df["Multibranch"], dtype=np.float32)
     capr[:seq_len, 5] = np.array(capr_df["Stem"], dtype=np.float32)
+
+    return bases, bpp, mfe_structure, capr
+
+
+def process_data(row):
+    """
+    Convert a row containing all csv columns in the original dataset
+    to a row containing only the columns:
+    - bases
+    - bpp
+    - mfe
+    - capr
+    - outputs
+    - output_masks
+    - reactivity_error
+    - bool_output_masks
+    """
+    # initialize arrays
+    # note that we assume everything is masked until told otherwise
+    output_masks = np.ones((NUM_REACTIVITIES,), dtype=np.bool_)
+    reactivity_errors = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
+    reactivities = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
+
+    seq_len = len(row["sequence"])
 
     # get the reactivities and their errors
     reactivities[:seq_len] = np.array(
@@ -257,6 +269,7 @@ def process_data(row):
     )
 
     # store the values
+    bases, bpp, mfe_structure, capr = extract_rna(row)
     row = {}
     row["bases"] = bases
     row["bpp"] = bpp
@@ -278,64 +291,7 @@ def process_data_test(row):
     """
     # initialize arrays
     # note that we assume everything is masked until told otherwise
-    bases = np.zeros((NUM_REACTIVITIES, NUM_BASES), dtype=np.float32)
-    bpp = np.zeros((NUM_REACTIVITIES, NUM_BPP), dtype=np.float32)
-    mfe_structure = np.zeros((NUM_REACTIVITIES, NUM_STRUCT * NUM_BPP), dtype=np.float32)
-    capr = np.zeros((NUM_REACTIVITIES, NUM_CAPR), dtype=np.float32)
-
-    seq_len = len(row["sequence"])
-
-    # encode the bases
-    bases[:seq_len] = np.array(
-        list(map(lambda letter: base_map[letter], row["sequence"]))
-    )
-
-    # get the probability that any of those bases are paired
-    lin_bpps = bpps(
-        row["sequence"], package="contrafold_2", linear=True, threshknot=True
-    )
-    eterna_bpps = bpps(row["sequence"], package="contrafold_2")
-    contra_bpps = bpps(row["sequence"], package="eternafold")
-
-    # save the sums
-    bpp[:seq_len, 0] = np.sum(lin_bpps, axis=-1)
-    bpp[:seq_len, 1] = np.sum(contra_bpps, axis=-1)
-    bpp[:seq_len, 2] = np.sum(eterna_bpps, axis=-1)
-
-    # get the mfe structure
-    mfe_structure[:seq_len, :3] = np.array(
-        list(
-            map(
-                lambda letter: mfe_map[letter],
-                MEA(lin_bpps).structure,
-            )
-        )
-    )
-    mfe_structure[:seq_len, 3:6] = np.array(
-        list(
-            map(
-                lambda letter: mfe_map[letter],
-                MEA(contra_bpps).structure,
-            )
-        )
-    )
-    mfe_structure[:seq_len, 6:9] = np.array(
-        list(
-            map(
-                lambda letter: mfe_map[letter],
-                MEA(eterna_bpps).structure,
-            )
-        )
-    )
-
-    capr_df = run_CapR("./tmp/" + str(uuid.uuid4()), row["sequence"], NUM_REACTIVITIES)
-    capr[:seq_len, 0] = np.array(capr_df["Bulge"], dtype=np.float32)
-    capr[:seq_len, 1] = np.array(capr_df["Exterior"], dtype=np.float32)
-    capr[:seq_len, 2] = np.array(capr_df["Hairpin"], dtype=np.float32)
-    capr[:seq_len, 3] = np.array(capr_df["Internal"], dtype=np.float32)
-    capr[:seq_len, 4] = np.array(capr_df["Multibranch"], dtype=np.float32)
-    capr[:seq_len, 5] = np.array(capr_df["Stem"], dtype=np.float32)
-
+    bases, bpp, mfe_structure, capr = extract_rna(row)
     row["bases"] = bases
     row["mfe"] = mfe_structure
     row["capr"] = capr
