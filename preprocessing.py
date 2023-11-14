@@ -335,9 +335,9 @@ def preprocess_csv(
         print("File already exists, not doing any work.\n")
         return
     if not os.path.exists(out) and not force:
-        print("Retriving dataset from hub")
+        print("Retrieving dataset from hub")
         try:
-            ds = load_dataset(f"chreh/{out}")["train"]
+            ds = load_dataset(f"chreh/{out}", revision="eliot-att")["train"]
             ds.save_to_disk(f"{out}")
             return
         except:

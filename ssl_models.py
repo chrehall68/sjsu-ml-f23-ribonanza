@@ -1,5 +1,5 @@
 # imports
-from random import random
+import random
 from typing import Callable
 import torch
 from torch.utils.tensorboard.writer import SummaryWriter
@@ -305,8 +305,8 @@ def train_unlabelled_batch(
 
     i_mfe = mfe
     j_mfe = mfe
-    i_mfe[:, :, 6:] = i_mfe[:, :, :5]
-    j_mfe[:, :, :5] = j_mfe[:, :, 6:]
+    i_mfe[:, :, 3:] = i_mfe[:, :, :3]
+    j_mfe[:, :, :3] = j_mfe[:, :, 3:]
 
     i_preds = m(bases, i_bpp, i_mfe, capr)
     j_preds = m(bases, j_bpp, j_mfe, capr)
@@ -319,9 +319,7 @@ def train_unlabelled_batch(
     m_optim.step()
 
     # return weighted and unweighted mae loss
-    return (
-        loss.to(torch.float32).detach().cpu(),
-    )
+    return loss.to(torch.float32).detach().cpu()
 
 
 def ssl_train_loop(
@@ -366,9 +364,6 @@ def ssl_train_loop(
             bpp = bpp.to(device, dtype)
             mfe = mfe.to(device, dtype)
             capr = capr.to(device, dtype)
-
-            outs = outs.to(device, dtype)
-            masks = masks.to(device, dtype)
 
             mae = train_unlabelled_batch(
                 m, bases, bpp, mfe, capr, m_optim
@@ -453,6 +448,8 @@ def ssl_train(
     att_factory: Callable[
         [], attentions.Attention
     ] = create_scaled_dot_product_attention,
+    save_prefix: str = "",
+    load_prefix: str = "",
     dtype: torch.dtype = torch.float32,
 ):
     """
@@ -502,12 +499,12 @@ def ssl_train(
         scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
 
     # load old weights if possible
-    if os.path.exists(f"{dataset_name}_model.pt"):
+    if os.path.exists(f"{load_prefix}{dataset_name}_model.pt"):
         try:
-            model.load_state_dict(torch.load(f"{dataset_name}_model.pt"))
-            print(f"loaded previous {dataset_name} weights")
+            model.load_state_dict(torch.load(f"{load_prefix}{dataset_name}_model.pt"))
+            print(f"loaded previous {load_prefix}{dataset_name} weights")
         except Exception as e:
-            print(f"not loading previous {dataset_name} weights because", e)
+            print(f"not loading previous {load_prefix}{dataset_name} weights because", e)
             pass
 
     # log # of parameters
@@ -522,7 +519,7 @@ def ssl_train(
         scheduler,
         train_dataloader,
         writer=writer,
-        model_name=dataset_name,
+        model_name=save_prefix+dataset_name,
         epochs=epochs,
         dtype=dtype,
     )

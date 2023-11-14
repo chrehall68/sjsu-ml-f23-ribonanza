@@ -89,7 +89,10 @@ def submit(
     model_dms_att_factory: Callable[
         [], attention.Attention
     ] = create_scaled_dot_product_attention,
-    dtype: torch.dtype = torch.float32,
+    model_2a3_params: str = "2a3_model.pt",
+    model_dms_params: str = "dms_model.pt",
+    dtype: torch.dtype = torch.float32
+
 ):
     """
     Generate a submission.csv.zip file for submitting
@@ -106,8 +109,8 @@ def submit(
     model_dms = AttentionModel(**model_dms_dict, att_factory=model_dms_att_factory)
 
     # load weights
-    model_2a3.load_state_dict(torch.load("2a3_model.pt"))
-    model_dms.load_state_dict(torch.load("dms_model.pt"))
+    model_2a3.load_state_dict(torch.load(model_2a3_params))
+    model_dms.load_state_dict(torch.load(model_dms_params))
 
     # set in evaluation mode and move to device
     model_2a3.eval().to(DEVICE, dtype)

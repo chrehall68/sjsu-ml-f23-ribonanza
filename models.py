@@ -521,6 +521,8 @@ def train(
     att_factory: Callable[
         [], attentions.Attention
     ] = create_scaled_dot_product_attention,
+    save_prefix: str = "",
+    load_prefix: str = "",
     dtype: torch.dtype = torch.float32,
 ):
     """
@@ -578,12 +580,12 @@ def train(
         scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
 
     # load old weights if possible
-    if os.path.exists(f"{dataset_name}_model.pt"):
+    if os.path.exists(f"{load_prefix}{dataset_name}_model.pt"):
         try:
-            model.load_state_dict(torch.load(f"{dataset_name}_model.pt"))
-            print(f"loaded previous {dataset_name} weights")
+            model.load_state_dict(torch.load(f"{load_prefix}{dataset_name}_model.pt"))
+            print(f"loaded previous {load_prefix}{dataset_name} weights")
         except Exception as e:
-            print(f"not loading previous {dataset_name} weights because", e)
+            print(f"not loading previous {load_prefix}{dataset_name} weights because", e)
             pass
 
     # log # of parameters
@@ -599,7 +601,7 @@ def train(
         train_dataloader,
         val_dataloader,
         writer=writer,
-        model_name=dataset_name,
+        model_name=save_prefix+dataset_name,
         epochs=epochs,
         dtype=dtype,
     )
