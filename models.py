@@ -97,7 +97,7 @@ class CustomTransformerDecoderLayer(torch.nn.Module):
 
     def forward(self, x: torch.Tensor, ctx: torch.Tensor, attention_mask: torch.Tensor):
         # MHA self attention, add norm
-        x = self.layer_norm(self.selfattention(x, attention_mask=attention_mask) + x)
+        x = self.layer_norm(self.selfattention(x, att_mask=attention_mask) + x)
 
         # MHA cross attention, add, norm
         x = self.layer_norm(
