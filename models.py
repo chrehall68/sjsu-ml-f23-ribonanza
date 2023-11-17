@@ -40,7 +40,11 @@ class CustomTransformerEncoderLayer(torch.nn.Module):
     ) -> None:
         super(CustomTransformerEncoderLayer, self).__init__()
         self.attention = components.MultiHeadDispatch(
-            dim_model=latent_dim, num_heads=n_heads, attention=attention, **kwargs
+            dim_model=latent_dim,
+            num_heads=n_heads,
+            attention=attention,
+            use_rotary_embeddings=True,
+            **kwargs,
         ).to(device)
         self.layer_norm = torch.nn.LayerNorm(latent_dim).to(device)
 
@@ -71,11 +75,19 @@ class CustomTransformerDecoderLayer(torch.nn.Module):
     ) -> None:
         super(CustomTransformerDecoderLayer, self).__init__()
         self.crossattention = components.MultiHeadDispatch(
-            dim_model=latent_dim, num_heads=n_heads, attention=attention, **kwargs
+            dim_model=latent_dim,
+            num_heads=n_heads,
+            attention=attention,
+            use_rotary_embeddings=True,
+            **kwargs,
         ).to(device)
 
         self.selfattention = components.MultiHeadDispatch(
-            dim_model=latent_dim, num_heads=n_heads, attention=attention, **kwargs
+            dim_model=latent_dim,
+            num_heads=n_heads,
+            attention=attention,
+            use_rotary_embeddings=True,
+            **kwargs,
         ).to(device)
         self.layer_norm = torch.nn.LayerNorm(latent_dim).to(device)
 
@@ -85,7 +97,7 @@ class CustomTransformerDecoderLayer(torch.nn.Module):
 
     def forward(self, x: torch.Tensor, ctx: torch.Tensor, attention_mask: torch.Tensor):
         # MHA self attention, add norm
-        x = self.layer_norm(self.selfattention(x) + x)
+        x = self.layer_norm(self.selfattention(x, attention_mask=attention_mask) + x)
 
         # MHA cross attention, add, norm
         x = self.layer_norm(
@@ -178,10 +190,9 @@ class AttentionModel(torch.nn.Module):
         self.n_heads = n_heads
         self.latent_dim = latent_dim
 
-        self.proj = torch.nn.Linear(NUM_BPP + 1, latent_dim).to(device)
+        self.proj = torch.nn.Linear(NUM_BPP + 4, latent_dim).to(device)
 
         # positional embedding encoder/decoder layers
-        self.pos_embedding = embeddings.SinePositionalEmbedding(latent_dim).to(device)
         self.has_encoder = enc_layers >= 1
         self.has_decoder = dec_layers >= 1
         if self.has_encoder:
@@ -204,13 +215,19 @@ class AttentionModel(torch.nn.Module):
 
         # output head
         self.head = torch.nn.Linear(latent_dim, 1).to(device)
-        self.final_result = torch.nn.Linear(NUM_REACTIVITIES, NUM_REACTIVITIES).to(
-            device
-        )
 
         # activations
-        self.relu = torch.nn.ReLU()
         self.gelu = torch.nn.GELU()
+
+        self.oh = torch.tensor(
+            [
+                [0, 0, 0, 0],
+                [1, 0, 0, 0],
+                [0, 1, 0, 0],
+                [0, 0, 1, 0],
+                [0, 0, 0, 1],
+            ]
+        ).to(device)
 
     def forward(self, tokens: torch.Tensor, bpp: torch.Tensor) -> torch.Tensor:
         """
@@ -227,10 +244,11 @@ class AttentionModel(torch.nn.Module):
         )
 
         # project inputs and bpp to latent_dim
-        x = self.proj(torch.concat([tokens.unsqueeze(-1), bpp], dim=-1))
+        x = self.proj(
+            torch.concat([self.oh[tokens.to(torch.int)].to(bpp.dtype), bpp], dim=-1)
+        )
 
         # add sinusoidal embedding and then perform attention
-        x = self.pos_embedding(x)
         if self.has_decoder and self.has_encoder:
             x = self.decoder_layers(
                 x, ctx=self.encoder_layers(x, attention_mask=mask), attention_mask=mask
@@ -241,7 +259,7 @@ class AttentionModel(torch.nn.Module):
             x = self.decoder_layers(x, ctx=x, attention_mask=mask)
 
         # final result
-        x = self.relu(self.final_result(self.gelu(self.head(x).flatten(start_dim=1))))
+        x = self.gelu(self.head(x).flatten(start_dim=1))
         return x
 
 
