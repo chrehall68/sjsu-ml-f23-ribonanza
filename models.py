@@ -214,7 +214,7 @@ class AttentionModel(torch.nn.Module):
             )
 
         # output head
-        self.head = torch.nn.Linear(latent_dim, 1).to(device)
+        self.head = torch.nn.Linear(latent_dim, 2).to(device)
 
         # activations
         self.gelu = torch.nn.GELU()
@@ -233,7 +233,7 @@ class AttentionModel(torch.nn.Module):
         """
         Arguments:
             - tokens: torch.Tensor - should have shape B,457
-            - bpp: torch.Tensor - should have shape B,457
+            - bpp: torch.Tensor - should have shape B,457,NUM_BPP
         """
         mask = att_utils.maybe_merge_masks(
             att_mask=None,
@@ -259,7 +259,7 @@ class AttentionModel(torch.nn.Module):
             x = self.decoder_layers(x, ctx=x, attention_mask=mask)
 
         # final result
-        x = self.gelu(self.head(x).flatten(start_dim=1))
+        x = self.gelu(self.head(x))
         return x
 
 

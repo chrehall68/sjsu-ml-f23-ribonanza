@@ -7,8 +7,7 @@ import os
 
 
 def pipeline(
-    model_2a3: torch.nn.Module,
-    model_dms: torch.nn.Module,
+    model: torch.nn.Module,
     input_ds: str,
     out: str,
     batch_size: int,
@@ -17,8 +16,7 @@ def pipeline(
     Make predictions on the test dataset and write them to a csv file
 
     Parameters:
-        - model_2a3: torch.nn.Module - the model trained on the 2a3 distribution
-        - model_dms: torch.nn.Module - the model trained on the dms distribution
+        - model: torch.nn.Module - the model trained on both the 2a3 and dms distributions
         - input_ds: str - name of the dataset to load
         - out: str - name of the file to write to
         - batch_size: int - size of the batches to use to process the data.
@@ -43,14 +41,14 @@ def pipeline(
 
             # make predictions w/o gradients
             with torch.no_grad():
-                preds_2a3 = model_2a3(tokens, bpp).cpu().numpy()
-                preds_dms = model_dms(tokens, bpp).cpu().numpy()
+                preds = model(tokens, bpp).cpu().numpy()
 
             # write preds
             for i in range(tokens.shape[0]):
                 outfile.writelines(
                     map(
-                        lambda seq_idx: f"{seq_idx},{preds_dms[i, seq_idx-min_ids[i]]:.3f},{preds_2a3[i, seq_idx-min_ids[i]]:.3f}\n",
+                        # dms is index 0, 2a3 is index 1
+                        lambda seq_idx: f"{seq_idx},{preds[i, seq_idx-min_ids[i], 0]:.3f},{preds[i, seq_idx-min_ids[i], 1]:.3f}\n",
                         # +1 since the id_max is inclusive
                         range(min_ids[i], max_ids[i] + 1),
                     )
@@ -59,14 +57,7 @@ def pipeline(
 
 def submit(
     batch_size: int = 64,
-    model_2a3_dict: dict = dict(
-        latent_dim=32,
-        n_heads=1,
-        enc_layers=4,
-        dec_layers=4,
-        ff_dim=2048,
-    ),
-    model_dms_dict: dict = dict(
+    model_dict: dict = dict(
         latent_dim=32,
         n_heads=1,
         enc_layers=4,
@@ -85,20 +76,16 @@ def submit(
             the dms `AttentionModel`
     """
     # initialize models
-    model_2a3 = AttentionModel(**model_2a3_dict)
-    model_dms = AttentionModel(**model_dms_dict)
+    model = AttentionModel(**model_dict)
 
     # load weights
-    model_2a3.load_state_dict(torch.load("2a3_model.pt"))
-    model_dms.load_state_dict(torch.load("dms_model.pt"))
+    model.load_state_dict(torch.load("full_model.pt"))
 
     # set in evaluation mode and move to device
-    model_2a3.eval().to(DEVICE)
-    model_dms.eval().to(DEVICE)
+    model.eval().to(DEVICE)
 
     pipeline(
-        model_2a3,
-        model_dms,
+        model,
         "test_data_preprocessed",
         "submission.csv",
         batch_size=batch_size,
