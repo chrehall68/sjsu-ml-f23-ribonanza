@@ -311,13 +311,13 @@ def combine_datasets():
         outputs = np.zeros((NUM_REACTIVITIES, 2), dtype=np.float32)
         output_masks = np.zeros((NUM_REACTIVITIES, 2), dtype=np.float32)
 
-        # 2a3 is index 0, dms is index 1
+        # dms is index 0, 2a3 is index 1
         if row["ds"] == "2a3":
-            outputs[:, 0] = row["outputs"]
-            output_masks[:, 0] = row["output_masks"]
-        elif row["ds"] == "dms":
             outputs[:, 1] = row["outputs"]
             output_masks[:, 1] = row["output_masks"]
+        elif row["ds"] == "dms":
+            outputs[:, 0] = row["outputs"]
+            output_masks[:, 0] = row["output_masks"]
         else:
             raise Exception("Something went wrong")
 
