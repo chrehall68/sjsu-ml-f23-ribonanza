@@ -141,7 +141,7 @@ def ssl(
     # pl process
     for i in range(epochs):
         # make preds
-        ds = pl(model, DEVICE, label_batch_size)
+        ds = pl(model, label_batch_size, DEVICE)
 
         # train on pseudo-labeled data
         print("pl epoch", i)
