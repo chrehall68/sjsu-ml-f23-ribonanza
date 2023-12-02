@@ -7,6 +7,7 @@ from preprocessing import (
     combine_datasets,
 )
 from models import train
+from pl import ssl
 from submit import submit
 
 if __name__ == "__main__":
@@ -26,8 +27,12 @@ if __name__ == "__main__":
     )
     combine_datasets()
 
-    # train models
-    train("full_32lat", dataset_name="full", batch_size=32)
+    # train model on just train dataset
+    name = "full_32lat"
+    train(name, dataset_name="full")
+
+    # semi-supervised learning
+    ssl(name)
 
     # submit predictions
     submit(batch_size=64)

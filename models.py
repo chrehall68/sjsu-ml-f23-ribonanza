@@ -2,6 +2,7 @@
 import torch
 from torch.utils.tensorboard.writer import SummaryWriter
 import torch.utils.data as data
+import torch.nn as nn
 import numpy as np
 from tqdm import tqdm
 from datasets import Dataset
@@ -9,7 +10,6 @@ import os
 from constants import NUM_BPP, NUM_REACTIVITIES
 
 # used for better attention mechanisms
-import xformers.components.positional_embedding as embeddings
 import xformers.components.attention as attentions
 import xformers.components.attention.utils as att_utils
 import xformers.components as components
@@ -27,14 +27,13 @@ DEVICE = torch.device(DEVICE)
 print(DEVICE)
 
 
-class CustomTransformerEncoderLayer(torch.nn.Module):
+class CustomTransformerEncoderLayer(nn.Module):
     def __init__(
         self,
         attention: components.Attention,
         latent_dim: int,
         ff_dim: int,
         n_heads: int,
-        device: str = DEVICE,
         *args,
         **kwargs,
     ) -> None:
@@ -45,31 +44,30 @@ class CustomTransformerEncoderLayer(torch.nn.Module):
             attention=attention,
             use_rotary_embeddings=True,
             **kwargs,
-        ).to(device)
-        self.layer_norm = torch.nn.LayerNorm(latent_dim).to(device)
+        )
+        self.l1 = nn.LayerNorm(latent_dim)
 
-        self.ff1 = torch.nn.Linear(latent_dim, ff_dim).to(device)
-        self.ff2 = torch.nn.Linear(ff_dim, latent_dim).to(device)
-        self.gelu = torch.nn.GELU()
+        self.gelu = nn.GELU()
+        self.ff1 = nn.Linear(latent_dim, ff_dim)
+        self.ff2 = nn.Linear(ff_dim, latent_dim)
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor):
         # MHA self attention, add, norm
-        x = self.layer_norm(self.attention(x, att_mask=attention_mask) + x)
+        x = self.l1(self.attention(x, att_mask=attention_mask) + x)
 
         # ff, add, norm
-        x = self.layer_norm(self.gelu(self.ff2(self.gelu(self.ff1(x)))) + x)
+        x = self.l1(self.gelu(self.ff2(self.gelu(self.ff1(x)))) + x)
 
         return x
 
 
-class CustomTransformerDecoderLayer(torch.nn.Module):
+class CustomTransformerDecoderLayer(nn.Module):
     def __init__(
         self,
         attention: components.Attention,
         latent_dim: int,
         ff_dim: int,
         n_heads: int,
-        device: str = DEVICE,
         *args,
         **kwargs,
     ) -> None:
@@ -80,7 +78,7 @@ class CustomTransformerDecoderLayer(torch.nn.Module):
             attention=attention,
             use_rotary_embeddings=True,
             **kwargs,
-        ).to(device)
+        )
 
         self.selfattention = components.MultiHeadDispatch(
             dim_model=latent_dim,
@@ -88,30 +86,30 @@ class CustomTransformerDecoderLayer(torch.nn.Module):
             attention=attention,
             use_rotary_embeddings=True,
             **kwargs,
-        ).to(device)
-        self.layer_norm = torch.nn.LayerNorm(latent_dim).to(device)
+        )
+        self.l1 = nn.LayerNorm(latent_dim)
 
-        self.ff1 = torch.nn.Linear(latent_dim, ff_dim).to(device)
-        self.ff2 = torch.nn.Linear(ff_dim, latent_dim).to(device)
-        self.gelu = torch.nn.GELU()
+        self.gelu = nn.GELU()
+        self.ff1 = nn.Linear(latent_dim, ff_dim)
+        self.ff2 = nn.Linear(ff_dim, latent_dim)
 
     def forward(self, x: torch.Tensor, ctx: torch.Tensor, attention_mask: torch.Tensor):
         # MHA self attention, add norm
-        x = self.layer_norm(self.selfattention(x, att_mask=attention_mask) + x)
+        x = self.l1(self.selfattention(x, att_mask=attention_mask) + x)
 
         # MHA cross attention, add, norm
-        x = self.layer_norm(
+        x = self.l1(
             self.crossattention(key=ctx, query=ctx, value=x, att_mask=attention_mask)
             + x
         )
 
         # ff, add, norm
-        x = self.layer_norm(self.gelu(self.ff2(self.gelu(self.ff1(x)))) + x)
+        x = self.l1(self.gelu(self.ff2(self.gelu(self.ff1(x)))) + x)
 
         return x
 
 
-class CustomTransformerEncoder(torch.nn.Module):
+class CustomTransformerEncoder(nn.Module):
     def __init__(
         self,
         attention_type: components.Attention,
@@ -119,7 +117,6 @@ class CustomTransformerEncoder(torch.nn.Module):
         latent_dim: int,
         ff_dim: int,
         n_heads: int,
-        device: str = DEVICE,
         **kwargs,
     ) -> None:
         super(CustomTransformerEncoder, self).__init__()
@@ -131,7 +128,6 @@ class CustomTransformerEncoder(torch.nn.Module):
                     latent_dim=latent_dim,
                     ff_dim=ff_dim,
                     n_heads=n_heads,
-                    device=device,
                     **kwargs,
                 ),
             )
@@ -142,7 +138,7 @@ class CustomTransformerEncoder(torch.nn.Module):
         return x
 
 
-class CustomTransformerDecoder(torch.nn.Module):
+class CustomTransformerDecoder(nn.Module):
     def __init__(
         self,
         attention_type: components.Attention,
@@ -150,7 +146,6 @@ class CustomTransformerDecoder(torch.nn.Module):
         latent_dim: int,
         ff_dim: int,
         n_heads: int,
-        device: str = DEVICE,
         **kwargs,
     ) -> None:
         super(CustomTransformerDecoder, self).__init__()
@@ -162,7 +157,6 @@ class CustomTransformerDecoder(torch.nn.Module):
                     latent_dim=latent_dim,
                     ff_dim=ff_dim,
                     n_heads=n_heads,
-                    device=device,
                     **kwargs,
                 ),
             )
@@ -173,7 +167,7 @@ class CustomTransformerDecoder(torch.nn.Module):
         return x
 
 
-class AttentionModel(torch.nn.Module):
+class AttentionModel(nn.Module):
     def __init__(
         self,
         attention_type: attentions.Attention = attentions.ScaledDotProduct(dropout=0.1),
@@ -182,7 +176,6 @@ class AttentionModel(torch.nn.Module):
         n_heads: int = 2,
         enc_layers: int = 1,
         dec_layers: int = 1,
-        device: str = DEVICE,
     ) -> None:
         super(AttentionModel, self).__init__()
 
@@ -190,7 +183,7 @@ class AttentionModel(torch.nn.Module):
         self.n_heads = n_heads
         self.latent_dim = latent_dim
 
-        self.proj = torch.nn.Linear(NUM_BPP + 4, latent_dim).to(device)
+        self.proj = nn.Linear(NUM_BPP + 4, latent_dim)
 
         # positional embedding encoder/decoder layers
         self.has_encoder = enc_layers >= 1
@@ -200,7 +193,6 @@ class AttentionModel(torch.nn.Module):
                 latent_dim=latent_dim,
                 ff_dim=ff_dim,
                 n_heads=n_heads,
-                device=device,
                 attention_type=attention_type,
                 n_layers=enc_layers,
             )
@@ -214,20 +206,23 @@ class AttentionModel(torch.nn.Module):
             )
 
         # output head
-        self.head = torch.nn.Linear(latent_dim, 2).to(device)
+        self.head = nn.Linear(latent_dim, 2)
 
         # activations
-        self.gelu = torch.nn.GELU()
+        self.gelu = nn.GELU()
 
-        self.oh = torch.tensor(
-            [
-                [0, 0, 0, 0],
-                [1, 0, 0, 0],
-                [0, 1, 0, 0],
-                [0, 0, 1, 0],
-                [0, 0, 0, 1],
-            ]
-        ).to(device)
+        self.register_buffer(
+            "oh",
+            torch.tensor(
+                [
+                    [0, 0, 0, 0],
+                    [1, 0, 0, 0],
+                    [0, 1, 0, 0],
+                    [0, 0, 1, 0],
+                    [0, 0, 0, 1],
+                ]
+            ),
+        )
 
     def forward(self, tokens: torch.Tensor, bpp: torch.Tensor) -> torch.Tensor:
         """
@@ -247,6 +242,7 @@ class AttentionModel(torch.nn.Module):
         x = self.proj(
             torch.concat([self.oh[tokens.to(torch.int)].to(bpp.dtype), bpp], dim=-1)
         )
+        x = self.layer_norm(x)
 
         # add sinusoidal embedding and then perform attention
         if self.has_decoder and self.has_encoder:
@@ -267,7 +263,7 @@ def unweightedL1(
     y_pred: torch.Tensor,
     y_true: torch.Tensor,
     weights: torch.Tensor,
-    l1=torch.nn.L1Loss(reduction="none"),
+    l1=nn.L1Loss(reduction="none"),
 ):
     """
     MAE Loss function where sample weights are only used to determine masks.
@@ -279,7 +275,7 @@ def weightedL1(
     y_pred: torch.Tensor,
     y_true: torch.Tensor,
     weights: torch.Tensor,
-    l1=torch.nn.L1Loss(reduction="none"),
+    l1=nn.L1Loss(reduction="none"),
 ):
     """
     MAE loss function that takes into account sample weights
@@ -288,7 +284,7 @@ def weightedL1(
 
 
 def train_batch(
-    m: torch.nn.Module,
+    m: nn.Module,
     tokens: torch.Tensor,
     bpp: torch.Tensor,
     outs: torch.Tensor,
@@ -317,7 +313,7 @@ def train_batch(
 
 
 def noupdate_batch(
-    m: torch.nn.Module,
+    m: nn.Module,
     tokens: torch.Tensor,
     bpp: torch.Tensor,
     outs: torch.Tensor,
@@ -337,7 +333,7 @@ def noupdate_batch(
 
 
 def masked_train(
-    m: torch.nn.Module,
+    m: nn.Module,
     m_optim: torch.optim.Optimizer,
     train_dataloader: data.DataLoader,
     val_dataloader: data.DataLoader,
@@ -350,9 +346,12 @@ def masked_train(
     Train the given model.
 
     Arguments:
-        - m: torch.nn.Module - the model to train.
+        - m: nn.Module - the model to train.
+        - m_optim: torch.optim.Optimizer - the optimizer to use for the model
         - train_dataloader: data.Dataloader - the dataloader that provides the batched training data
         - val_dataloader: data.Dataloader - the dataloader that provides the batched validation data
+        - writer: SummaryWriter - the logger to use
+        - model_name: str - the name to save the model as
         - epochs: int - how many epochs to train for. Defaults to `1`.
         - device: str - the device to train on, defaults to `DEVICE`
     """
@@ -365,7 +364,7 @@ def masked_train(
 
         m = m.train()
         for tdata in (prog := tqdm(train_dataloader, desc="batch")):
-            tokens = tdata["inputs"]
+            tokens = tdata["simple_tokens"]
             bpp = tdata["bpp"]
             outs = tdata["outputs"]
             masks = tdata["output_masks"]
@@ -394,7 +393,7 @@ def masked_train(
         val_weighted_mae = 0.0
         m = m.eval()
         for vdata in val_dataloader:
-            tokens = vdata["inputs"]
+            tokens = vdata["simple_tokens"]
             bpp = vdata["bpp"]
             outs = vdata["outputs"]
             masks = vdata["output_masks"]
@@ -425,8 +424,8 @@ def masked_train(
 def train(
     run_name: str,
     dataset_name: str,
-    lr: float = 3e-4,
-    batch_size: int = 64,
+    lr: float = 1e-4,
+    batch_size: int = 32,
     val_split: float = 0.1,
     epochs: int = 10,
     model_dict: dict = dict(
@@ -444,15 +443,18 @@ def train(
     Arguments:
         - run_name: str - the name of the run to log as
         - dataset_name: str - the name of the dataset, either "2a3" or "dms"
-        - lr: float - the learning rate to use. Defaults to 3e-4
+        - lr: float - the learning rate to use. Defaults to 1e-4
         - batch_size: int - the batch size to use when training and running validation. Defaults to 64
         - val_split: float - the size of the validation, from 0 to 1. Defaults to 0.1
         - epochs: int - the number of epochs to train for. Defaults to 10
         - model_dict: dict - a dictionary containing all the arguments to be passed when instantiating
             the `AttentionModel`
     """
+    # set seed for reproducibility
+    torch.manual_seed(2023)
+
     # load and process dataset
-    columns = ["inputs", "outputs", "output_masks", "bpp"]
+    columns = ["simple_tokens", "outputs", "output_masks", "bpp"]
 
     dataset = Dataset.load_from_disk(
         f"train_data_{dataset_name}_preprocessed"
@@ -483,18 +485,18 @@ def train(
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
     # load old weights if possible
-    if os.path.exists(f"{dataset_name}_model.pt"):
+    if os.path.exists(f"{run_name}_model.pt"):
         try:
-            model.load_state_dict(torch.load(f"{dataset_name}_model.pt"))
-            print(f"loaded previous {dataset_name} weights")
+            model.load_state_dict(torch.load(f"{run_name}_model.pt"))
+            print(f"loaded previous {run_name} weights")
         except Exception as e:
-            print(f"not loading previous {dataset_name} weights because", e)
+            print(f"not loading previous {run_name} weights because", e)
             pass
 
     # log # of parameters
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     params = sum([np.prod(p.size()) for p in model_parameters])
-    print(f"Total {dataset_name} model params:", params)
+    print(f"Total {run_name} model params:", params)
 
     # train
     masked_train(
@@ -503,6 +505,6 @@ def train(
         train_dataloader,
         val_dataloader,
         writer=writer,
-        model_name=dataset_name,
+        model_name=run_name,
         epochs=epochs,
     )

@@ -64,6 +64,7 @@ def submit(
         dec_layers=4,
         ff_dim=2048,
     ),
+    model_name: str = "full",
 ):
     """
     Generate a submission.csv.zip file for submitting
@@ -79,7 +80,7 @@ def submit(
     model = AttentionModel(**model_dict)
 
     # load weights
-    model.load_state_dict(torch.load("full_model.pt"))
+    model.load_state_dict(torch.load(f"{model_name}_model.pt"))
 
     # set in evaluation mode and move to device
     model.eval().to(DEVICE)

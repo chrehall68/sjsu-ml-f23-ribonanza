@@ -292,14 +292,15 @@ def preprocess_csv(
     )
 
     # drop excess columns and save to disk
-    ds.remove_columns(
-        list(filter(lambda c: c not in names_to_keep, ds.column_names))
-    ).save_to_disk(out)
+    ds.select_columns(names_to_keep).save_to_disk(out)
 
 
-def combine_datasets():
+def combine_datasets(force: bool = False):
     """
     Combine 2a3 and dms into one dataset
+
+    Arguments:
+        - force: bool - whether or not to force reprocessing of the data
     """
 
     def add_name(row, name: str):
@@ -325,6 +326,10 @@ def combine_datasets():
         row["output_masks"] = output_masks
         return row
 
+    if os.path.exists("train_data_full_preprocessed") and not force:
+        print("File already exists, not doing any work.\n")
+        return
+
     # load datasets
     ds_2a3 = Dataset.load_from_disk("train_data_2a3_preprocessed").with_format("numpy")
     ds_dms = Dataset.load_from_disk("train_data_dms_preprocessed").with_format("numpy")
@@ -337,9 +342,7 @@ def combine_datasets():
     ds_full = concatenate_datasets([ds_2a3, ds_dms])
 
     columns_to_keep = ["inputs", "bpp", "outputs", "output_masks", "ds"]
-    ds_full = ds_full.remove_columns(
-        filter(lambda col: col not in columns_to_keep, ds_full.column_names)
-    )
+    ds_full = ds_full.select_columns(columns_to_keep)
 
     # remap them
     ds_full = (
