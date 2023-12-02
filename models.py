@@ -242,7 +242,6 @@ class AttentionModel(nn.Module):
         x = self.proj(
             torch.concat([self.oh[tokens.to(torch.int)].to(bpp.dtype), bpp], dim=-1)
         )
-        x = self.layer_norm(x)
 
         # add sinusoidal embedding and then perform attention
         if self.has_decoder and self.has_encoder:
