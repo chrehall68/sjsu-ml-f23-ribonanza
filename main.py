@@ -4,8 +4,10 @@ from preprocessing import (
     filter_2A3,
     preprocess_csv,
     process_data_test,
+    combine_datasets,
 )
 from models import train
+from pl import ssl
 from submit import submit
 
 if __name__ == "__main__":
@@ -23,10 +25,14 @@ if __name__ == "__main__":
         map_fn=process_data_test,
         extra_cols_to_keep=["id_min", "id_max"],
     )
+    combine_datasets()
 
-    # train models
-    train("2a3_linearfold", dataset_name="2a3")
-    train("dms_linearfold", dataset_name="dms")
+    # train model on just train dataset
+    name = "full_32lat"
+    train(name, dataset_name="full")
+
+    # semi-supervised learning
+    ssl(name)
 
     # submit predictions
     submit(batch_size=64)

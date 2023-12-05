@@ -1,7 +1,7 @@
 # imports
 import numpy as np
 from tqdm import tqdm
-from datasets import Dataset, Array2D, load_dataset
+from datasets import Dataset, Array2D, load_dataset, concatenate_datasets
 from constants import NUM_REACTIVITIES, NUM_BPP
 import os
 
@@ -292,6 +292,65 @@ def preprocess_csv(
     )
 
     # drop excess columns and save to disk
-    ds.remove_columns(
-        list(filter(lambda c: c not in names_to_keep, ds.column_names))
-    ).save_to_disk(out)
+    ds.select_columns(names_to_keep).save_to_disk(out)
+
+
+def combine_datasets(force: bool = False):
+    """
+    Combine 2a3 and dms into one dataset
+
+    Arguments:
+        - force: bool - whether or not to force reprocessing of the data
+    """
+
+    def add_name(row, name: str):
+        row["ds"] = name
+        return row
+
+    def reproc(row):
+        # outputs should now be (OUTPUTS, 2)
+        outputs = np.zeros((NUM_REACTIVITIES, 2), dtype=np.float32)
+        output_masks = np.zeros((NUM_REACTIVITIES, 2), dtype=np.float32)
+
+        # dms is index 0, 2a3 is index 1
+        if row["ds"] == "2a3":
+            outputs[:, 1] = row["outputs"]
+            output_masks[:, 1] = row["output_masks"]
+        elif row["ds"] == "dms":
+            outputs[:, 0] = row["outputs"]
+            output_masks[:, 0] = row["output_masks"]
+        else:
+            raise Exception("Something went wrong")
+
+        row["outputs"] = outputs
+        row["output_masks"] = output_masks
+        return row
+
+    if os.path.exists("train_data_full_preprocessed") and not force:
+        print("File already exists, not doing any work.\n")
+        return
+
+    # load datasets
+    ds_2a3 = Dataset.load_from_disk("train_data_2a3_preprocessed").with_format("numpy")
+    ds_dms = Dataset.load_from_disk("train_data_dms_preprocessed").with_format("numpy")
+
+    # label them
+    ds_2a3 = ds_2a3.map(lambda row: add_name(row, "2a3"), num_proc=12)
+    ds_dms = ds_dms.map(lambda row: add_name(row, "dms"), num_proc=12)
+
+    # combine
+    ds_full = concatenate_datasets([ds_2a3, ds_dms])
+
+    columns_to_keep = ["inputs", "bpp", "outputs", "output_masks", "ds"]
+    ds_full = ds_full.select_columns(columns_to_keep)
+
+    # remap them
+    ds_full = (
+        ds_full.map(reproc, num_proc=12)
+        .cast_column("outputs", Array2D(shape=(NUM_REACTIVITIES, 2), dtype="float32"))
+        .cast_column(
+            "output_masks", Array2D(shape=(NUM_REACTIVITIES, 2), dtype="float32")
+        )
+    )
+
+    ds_full.save_to_disk("train_data_full_preprocessed")
