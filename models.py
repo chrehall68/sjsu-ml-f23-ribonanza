@@ -363,7 +363,7 @@ def masked_train(
 
         m = m.train()
         for tdata in (prog := tqdm(train_dataloader, desc="batch")):
-            tokens = tdata["simple_tokens"]
+            tokens = tdata["inputs"]
             bpp = tdata["bpp"]
             outs = tdata["outputs"]
             masks = tdata["output_masks"]
@@ -392,7 +392,7 @@ def masked_train(
         val_weighted_mae = 0.0
         m = m.eval()
         for vdata in val_dataloader:
-            tokens = vdata["simple_tokens"]
+            tokens = vdata["inputs"]
             bpp = vdata["bpp"]
             outs = vdata["outputs"]
             masks = vdata["output_masks"]
@@ -453,7 +453,7 @@ def train(
     torch.manual_seed(2023)
 
     # load and process dataset
-    columns = ["simple_tokens", "outputs", "output_masks", "bpp"]
+    columns = ["inputs", "outputs", "output_masks", "bpp"]
 
     dataset = Dataset.load_from_disk(
         f"train_data_{dataset_name}_preprocessed"

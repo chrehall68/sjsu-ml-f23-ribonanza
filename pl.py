@@ -14,13 +14,13 @@ def pl(model: torch.nn.Module, batch_size: int, device: torch.device):
     otherwise pseudo-labeling will only add noise to the training process
     """
     # columns to keep
-    columns = ["simple_tokens", "bpp", "outputs", "output_masks"]
+    columns = ["inputs", "bpp", "outputs", "output_masks"]
 
     def pred(rows):
         """
         Run inference on a batch, and store the outputs
         """
-        tokens = rows["simple_tokens"].to(device)
+        tokens = rows["inputs"].to(device)
         bpp = rows["bpp"].to(device)
 
         weights = torch.zeros((tokens.shape[0], NUM_REACTIVITIES, 2))
@@ -80,7 +80,7 @@ def train_ds(
 
     # iterate through dl
     for batch in (prog := tqdm(dl)):
-        tokens: torch.Tensor = batch["simple_tokens"]
+        tokens: torch.Tensor = batch["inputs"]
         bpp: torch.Tensor = batch["bpp"]
         outs: torch.Tensor = batch["outputs"]
         masks: torch.Tensor = batch["output_masks"]
