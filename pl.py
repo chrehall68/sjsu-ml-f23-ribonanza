@@ -117,6 +117,7 @@ def ssl(
     train_batch_size: int = 32,
     label_batch_size: int = 64,
     epochs: int = 5,
+    sub_epochs: int = 2,
     model_dict: dict = dict(
         latent_dim=32,
         n_heads=1,
@@ -139,6 +140,7 @@ def ssl(
         - epochs: int - number of epochs to train for. One epoch is one complete pass on the
             test set concatenated with the train set and one complete pass on just the train set.
             Defaults to `5`.
+        - sub_epochs: int - number of repetitions to do on each dataset in one epoch. Defaults to `2`
         - model_dict: dict - a dictionary containing all the arguments to be passed when instantiating
             the `AttentionModel`
     """
@@ -156,13 +158,17 @@ def ssl(
         ds = pl(model, label_batch_size, error_interval, DEVICE)
 
         # train on pseudo-labeled data
-        print("pl epoch", i)
-        train_ds(model, optim, ds, train_batch_size, DEVICE)
+        print("pl epoch", i + 1)
+        for sub in range(sub_epochs):
+            print("sub epoch", sub + 1)
+            train_ds(model, optim, ds, train_batch_size, DEVICE)
         print("cleaning up", ds.cleanup_cache_files(), "cache files")
         torch.save(model.state_dict(), f"{name}_model.pt")
 
         # train on regular data
-        print("regular epoch", i)
+        print("regular epoch", i + 1)
         ds = load_from_disk("train_data_full_preprocessed").with_format("torch")
-        train_ds(model, optim, ds, train_batch_size, DEVICE)
+        for sub in range(sub_epochs):
+            print("sub epoch", sub + 1)
+            train_ds(model, optim, ds, train_batch_size, DEVICE)
         torch.save(model.state_dict(), f"{name}_model.pt")

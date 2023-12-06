@@ -477,8 +477,12 @@ def masked_train(
         val_error_mae /= len(val_dataloader)
 
         print(
-            f"Epoch MAE: {epoch_mae:.5f}\tEpoch Weighted MAE: {epoch_weighted_mae:.5f}\t"
-            + f"Val MAE: {val_mae:.5f}\tVal Weighted MAE: {val_weighted_mae:.5f}"
+            f"Epoch MAE: {epoch_mae:.5f}\tEpoch WMAE: {epoch_weighted_mae:.5f}\t"
+            + f"Epoch Error MAE: {epoch_error_mae:.5f}\tEpoch Error WMAE {epoch_weighted_error_mae:.5f}"
+        )
+        print(
+            f"Val MAE: {val_mae:.5f}\tVal WMAE: {val_weighted_mae:.5f}\t"
+            + f"Val Error MAE: {val_error_mae:.5f}\t Val Error WMAE {val_weighted_error_mae:.5f}"
         )
 
         writer.add_scalar("epoch_mae", epoch_mae, global_step=epoch)
