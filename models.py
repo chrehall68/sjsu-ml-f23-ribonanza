@@ -8,6 +8,7 @@ from tqdm import tqdm
 from datasets import Dataset
 import os
 from constants import NUM_BPP, NUM_REACTIVITIES
+from typing import Tuple
 
 # used for better attention mechanisms
 import xformers.components.attention as attentions
@@ -183,6 +184,7 @@ class AttentionModel(nn.Module):
         self.n_heads = n_heads
         self.latent_dim = latent_dim
 
+        # input is bpp and one-hot encoded bases
         self.proj = nn.Linear(NUM_BPP + 4, latent_dim)
 
         # positional embedding encoder/decoder layers
@@ -206,6 +208,7 @@ class AttentionModel(nn.Module):
             )
 
         # output head
+        # dms, 2a3
         self.head = nn.Linear(latent_dim, 2)
 
         # activations
@@ -263,9 +266,16 @@ def unweightedL1(
     y_true: torch.Tensor,
     weights: torch.Tensor,
     l1=nn.L1Loss(reduction="none"),
-):
+) -> torch.Tensor:
     """
     MAE Loss function where sample weights are only used to determine masks.
+
+    Arguments:
+        - y_pred: torch.Tensor[B, NUM_REACTIVITIES, 2] - the predicted reactivities
+        - y_true: torch.Tensor[B, NUM_REACTIVITIES, 2] - the true reactivities
+
+    Returns:
+        - torch.Tensor - loss for reactivity predictions
     """
     return (l1(y_pred, y_true))[weights != 0].mean()
 
@@ -275,9 +285,16 @@ def weightedL1(
     y_true: torch.Tensor,
     weights: torch.Tensor,
     l1=nn.L1Loss(reduction="none"),
-):
+) -> torch.Tensor:
     """
     MAE loss function that takes into account sample weights
+
+    Arguments:
+        - y_pred: torch.Tensor[B, NUM_REACTIVITIES, 2] - the predicted reactivities
+        - y_true: torch.Tensor[B, NUM_REACTIVITIES, 2] - the true reactivities
+
+    Returns:
+        - torch.Tensor - loss for reactivity predictions
     """
     return (l1(y_pred, y_true) * weights)[weights != 0].mean()
 
@@ -289,10 +306,13 @@ def train_batch(
     outs: torch.Tensor,
     masks: torch.Tensor,
     m_optim: torch.optim.Optimizer,
-):
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Get the loss on a batch and perform the corresponding weight updates.
     Used for training purposes
+
+    Returns:
+        - Tuple[torch.Tensor, torch.Tensor] - weighted_loss, unweighted_loss
     """
     m_optim.zero_grad()
     preds = m(tokens, bpp)
@@ -308,7 +328,10 @@ def train_batch(
         unweighted_loss = unweightedL1(preds, outs, masks)
 
     # return weighted and unweighted mae loss
-    return weighted_loss.detach().cpu(), unweighted_loss.detach().cpu()
+    return (
+        weighted_loss.detach().cpu(),
+        unweighted_loss.detach().cpu(),
+    )
 
 
 def noupdate_batch(
@@ -317,10 +340,13 @@ def noupdate_batch(
     bpp: torch.Tensor,
     outs: torch.Tensor,
     masks: torch.Tensor,
-):
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Get the loss on a batch without performing any updates.
     Used for validation purposes
+
+    Returns:
+        - Tuple[torch.Tensor, torch.Tensor] - weighted_loss, unweighted_loss
     """
     with torch.no_grad():
         preds = m(tokens, bpp)
@@ -328,7 +354,7 @@ def noupdate_batch(
         unweighted_loss = unweightedL1(preds, outs, masks)
 
     # return weighted and unweighted mae loss
-    return weighted_loss.cpu(), unweighted_loss.cpu()
+    return (weighted_loss.cpu(), unweighted_loss.cpu())
 
 
 def masked_train(
@@ -356,6 +382,7 @@ def masked_train(
     """
     m = m.to(device)
 
+    best_val_mae = 100.0  # arbitrary large number
     for epoch in range(1, epochs + 1):
         print(f"Epoch {epoch}")
         epoch_mae = 0.0
@@ -363,7 +390,7 @@ def masked_train(
 
         m = m.train()
         for tdata in (prog := tqdm(train_dataloader, desc="batch")):
-            tokens = tdata["inputs"]
+            tokens = tdata["simple_tokens"]
             bpp = tdata["bpp"]
             outs = tdata["outputs"]
             masks = tdata["output_masks"]
@@ -379,9 +406,7 @@ def masked_train(
             epoch_mae += mae
 
             # log
-            prog.set_postfix_str(
-                f"mae_loss: {mae:.5f}, weighted_mae_loss: {weighted_mae:.5f}"
-            )
+            prog.set_postfix_str(f"MAE: {mae:.5f}, WMAE: {weighted_mae:.5f}")
 
             # break  # used for sanity check
         epoch_weighted_mae /= len(train_dataloader)
@@ -392,7 +417,7 @@ def masked_train(
         val_weighted_mae = 0.0
         m = m.eval()
         for vdata in val_dataloader:
-            tokens = vdata["inputs"]
+            tokens = vdata["simple_tokens"]
             bpp = vdata["bpp"]
             outs = vdata["outputs"]
             masks = vdata["output_masks"]
@@ -409,8 +434,8 @@ def masked_train(
         val_mae /= len(val_dataloader)
 
         print(
-            f"Epoch MAE: {epoch_mae:.5f}\tEpoch Weighted MAE: {epoch_weighted_mae:.5f}\t"
-            + f"Val MAE: {val_mae:.5f}\tVal Weighted MAE: {val_weighted_mae:.5f}"
+            f"Epoch MAE: {epoch_mae:.5f}\tEpoch WMAE: {epoch_weighted_mae:.5f}\t"
+            + f"Val MAE: {val_mae:.5f}\tVal WMAE: {val_weighted_mae:.5f}\t"
         )
 
         writer.add_scalar("epoch_mae", epoch_mae, global_step=epoch)
@@ -418,6 +443,11 @@ def masked_train(
 
         # save every epoch
         torch.save(m.state_dict(), f"{model_name}_model.pt")
+
+        # save the best model as well
+        if val_mae < best_val_mae:
+            best_val_mae = val_mae
+            torch.save(m.state_dict(), "best.pt")
 
 
 def train(
@@ -453,7 +483,7 @@ def train(
     torch.manual_seed(2023)
 
     # load and process dataset
-    columns = ["inputs", "outputs", "output_masks", "bpp"]
+    columns = ["simple_tokens", "outputs", "output_masks", "bpp"]
 
     dataset = Dataset.load_from_disk(
         f"train_data_{dataset_name}_preprocessed"

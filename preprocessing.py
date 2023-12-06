@@ -4,6 +4,7 @@ from tqdm import tqdm
 from datasets import Dataset, Array2D, load_dataset, concatenate_datasets
 from constants import NUM_REACTIVITIES, NUM_BPP
 import os
+from encoder import Encoder
 
 # typing hints
 from typing import List
@@ -11,6 +12,7 @@ from collections.abc import Callable
 
 # used for bpps
 from arnie.bpps import bpps
+from arnie.mfe import mfe
 
 
 # encode inputs as
@@ -116,39 +118,64 @@ def filter_DMS(force: bool = False):
     )
 
 
-def process_data(row):
+def extract_rna(row, encoder: Encoder):
+    """
+    Extracts relevant RNA information.
+
+    Returns (tokens, simple_tokens, bpp)
+    """
+    bpp = np.zeros((NUM_REACTIVITIES, NUM_BPP), dtype=np.float32)
+
+    seq = row["sequence"]
+    seq_len = len(seq)
+
+    kwargs = [
+        dict(package="contrafold_2", T=60, linear=True, threshknot=True),
+        dict(package="contrafold_2", linear=True, threshknot=True),
+        dict(package="contrafold_2", T=60),
+        dict(package="contrafold_2"),
+        dict(package="eternafold", T=60, linear=True),
+        dict(package="eternafold", linear=True),
+        dict(package="eternafold", T=60),
+        dict(package="eternafold"),
+    ]
+
+    # get the probability that any of those bases are paired
+    bpp_lst = list(map(lambda kwargs_: bpps(sequence=seq, **kwargs_), kwargs))
+
+    # save the sums
+    for i, bpp_ in enumerate(bpp_lst):
+        bpp[:seq_len, i] = np.sum(bpp_, axis=-1)
+
+    # get the mfe structure
+    mfe_lst = list(map(lambda kwargs_: mfe(seq=seq, **kwargs_), kwargs))
+
+    # tokenize
+    tokens = encoder.tokenize(seq, *mfe_lst)
+    simple_tokens = encoder.simple_tokenize(seq)
+
+    return tokens, simple_tokens, bpp
+
+
+def process_data(row, encoder: Encoder = Encoder()):
     """
     Convert a row containing all csv columns in the original dataset
-    to a row containing only the columns:
-    - inputs
-    - outputs
+    to a row containing the columns:
+    - tokens
+    - simple_tokens
     - bpp
+    - outputs
     - output_masks
-    - reactivity_error
+    - reactivity_errors
     - bool_output_masks
     """
     # initialize arrays
     # note that we assume everything is masked until told otherwise
-    inputs = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
-    bpp = np.zeros((NUM_REACTIVITIES, NUM_BPP), dtype=np.float32)
     output_masks = np.ones((NUM_REACTIVITIES,), dtype=np.bool_)
     reactivity_errors = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
     reactivities = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
 
     seq_len = len(row["sequence"])
-
-    # encode the bases
-    inputs[:seq_len] = np.array(
-        list(map(lambda letter: base_map[letter], row["sequence"]))
-    )
-
-    # get the probability that any of those bases are paired
-    bpp[:seq_len, 0] = np.sum(
-        bpps(row["sequence"], package="contrafold", linear=True, threshknot=True),
-        axis=-1,
-    )
-    bpp[:seq_len, 1] = np.sum(bpps(row["sequence"], package="contrafold"), axis=-1)
-    bpp[:seq_len, 2] = np.sum(bpps(row["sequence"], package="eternafold"), axis=-1)
 
     # get the reactivities and their errors
     reactivities[:seq_len] = np.array(
@@ -189,45 +216,31 @@ def process_data(row):
         nan_locats[:seq_len] == False, reactivity_errors[:seq_len], 0.0
     )
 
-    # store the values
-    row = {}
-    row["inputs"] = inputs
+    # extract rna features
+    tokens, simple_tokens, bpp = extract_rna(row, encoder)
+
+    # store values
+    row["tokens"] = tokens
+    row["simple_tokens"] = simple_tokens
     row["bpp"] = bpp
     row["outputs"] = np.clip(reactivities, 0, 1)
     row["output_masks"] = np.clip(
         np.where(output_masks, 0.0, 1.0) - np.abs(reactivity_errors), 0, 1
     )
-    row["bool_output_masks"] = output_masks
     row["reactivity_errors"] = np.abs(reactivity_errors)
+    row["bool_output_masks"] = output_masks
 
     return row
 
 
-def process_data_test(row):
+def process_data_test(row, encoder: Encoder = Encoder()):
     """
-    Almost the same as process_data, except it only takes inputs and bpp
+    Almost the same as process_data, except it only extracts
+    tokens, simple_tokens, and bpp
     """
-    # initialize arrays
-    # note that we assume everything is masked until told otherwise
-    inputs = np.zeros((NUM_REACTIVITIES,), dtype=np.float32)
-    bpp = np.zeros((NUM_REACTIVITIES, NUM_BPP), dtype=np.float32)
-
-    seq_len = len(row["sequence"])
-
-    # encode the bases
-    inputs[:seq_len] = np.array(
-        list(map(lambda letter: base_map[letter], row["sequence"]))
-    )
-
-    # get the probability that any of those bases are paired
-    bpp[:seq_len, 0] = np.sum(
-        bpps(row["sequence"], package="contrafold", linear=True, threshknot=True),
-        axis=-1,
-    )
-    bpp[:seq_len, 1] = np.sum(bpps(row["sequence"], package="contrafold"), axis=-1)
-    bpp[:seq_len, 2] = np.sum(bpps(row["sequence"], package="eternafold"), axis=-1)
-
-    row["inputs"] = inputs
+    tokens, simple_tokens, bpp = extract_rna(row, encoder)
+    row["tokens"] = tokens
+    row["simple_tokens"] = simple_tokens
     row["bpp"] = bpp
     return row
 
@@ -235,7 +248,7 @@ def process_data_test(row):
 def preprocess_csv(
     out: str,
     file_name: str,
-    n_proc: int = 56,
+    n_proc: int = os.cpu_count(),
     map_fn: Callable = process_data,
     extra_cols_to_keep: List[str] = [],
     force: bool = False,
@@ -251,7 +264,10 @@ def preprocess_csv(
         - reactivity_errors: Tensor(dtype=torch.float32) - the reactivity errors
         - output_masks: Tensor(dtype=torch.float32) - the elementwise weights to multiply the loss by to properly
             account for masked items and reactivity errors
-        - inputs: tensor(dtype=torch.float32) - the input sequence, specifically of shape (None, NUM_REACTIVITIES)
+        - tokens: tensor(dtype=torch.int) - the input sequence, specifically of shape (None, NUM_REACTIVITIES), encoded
+            as tokens ranging from [0, encoder.num_tokens()), where 0 is reserved for not a base
+        - simple_tokens: tensor(dtype=torch.int) - the input sequence, specifically of shape (None, NUM_REACTIVITIES), encoded
+            as tokens ranging from [0, 4], where 0 is reserved for not a base
         - bpp: tensor(dtype=torch.float32)
         - outputs: tensor(dtype=torch.float32) - the expected reactivities. Note that a simple MAE or MSE loss will not
             suffice for training models on this dataset. Please use the output_masks tensor as well.
@@ -276,12 +292,13 @@ def preprocess_csv(
             print("Could not locate dataset. Running preprocessing locally.")
 
     names_to_keep = [
-        "reactivity_errors",
-        "bool_output_masks",
-        "output_masks",
-        "inputs",
-        "outputs",
+        "tokens",
+        "simple_tokens",
         "bpp",
+        "outputs",
+        "output_masks",
+        "reactivity_errors",
+        "sequence",
     ] + extra_cols_to_keep
 
     # load dataset and map it to our preprocess function
@@ -341,7 +358,7 @@ def combine_datasets(force: bool = False):
     # combine
     ds_full = concatenate_datasets([ds_2a3, ds_dms])
 
-    columns_to_keep = ["inputs", "bpp", "outputs", "output_masks", "ds"]
+    columns_to_keep = ["simple_tokens", "bpp", "outputs", "output_masks", "ds"]
     ds_full = ds_full.select_columns(columns_to_keep)
 
     # remap them
@@ -351,6 +368,7 @@ def combine_datasets(force: bool = False):
         .cast_column(
             "output_masks", Array2D(shape=(NUM_REACTIVITIES, 2), dtype="float32")
         )
+        .cast_column("bpp", Array2D((NUM_REACTIVITIES, NUM_BPP), dtype="float32"))
     )
 
     ds_full.save_to_disk("train_data_full_preprocessed")

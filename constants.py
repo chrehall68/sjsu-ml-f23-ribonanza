@@ -2,4 +2,4 @@
 NUM_REACTIVITIES = 457
 
 # use eternafold, contrafold, linearcontrafold threshknot
-NUM_BPP = 3
+NUM_BPP = 8
