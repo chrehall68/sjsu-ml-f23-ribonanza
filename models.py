@@ -407,6 +407,7 @@ def masked_train(
     """
     m = m.to(device)
 
+    best_val_mae = 100.0  # arbitrary large number
     for epoch in range(1, epochs + 1):
         print(f"Epoch {epoch}")
         epoch_mae = 0.0
@@ -485,6 +486,11 @@ def masked_train(
 
         # save every epoch
         torch.save(m.state_dict(), f"{model_name}_model.pt")
+
+        # save the best model as well
+        if val_mae < best_val_mae:
+            best_val_mae = val_mae
+            torch.save(m.state_dict(), "best.pt")
 
 
 def train(
