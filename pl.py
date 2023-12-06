@@ -26,19 +26,12 @@ def pl(
         bpp = rows["bpp"].to(device)
 
         weights = torch.zeros((tokens.shape[0], NUM_REACTIVITIES, 2))
+        weights[tokens != 0] = 1
 
         with torch.no_grad():
             preds = model(tokens, bpp).cpu()
 
-        # separate the predictions
-        output_preds = preds[:, :, :2]
-        error_preds = preds[:, :, 2:]
-
-        # use only the predictions on real tokens that the model was sure about
-        error_preds[tokens == 0] = 0
-        weights[error_preds < error_interval] = 1
-
-        rows["outputs"] = output_preds
+        rows["outputs"] = preds
         rows["output_masks"] = weights
 
         return rows

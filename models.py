@@ -208,8 +208,8 @@ class AttentionModel(nn.Module):
             )
 
         # output head
-        # dms, 2a3, dms_error, 2a3_error
-        self.head = nn.Linear(latent_dim, 4)
+        # dms, 2a3
+        self.head = nn.Linear(latent_dim, 2)
 
         # activations
         self.gelu = nn.GELU()
@@ -266,28 +266,18 @@ def unweightedL1(
     y_true: torch.Tensor,
     weights: torch.Tensor,
     l1=nn.L1Loss(reduction="none"),
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> torch.Tensor:
     """
     MAE Loss function where sample weights are only used to determine masks.
 
     Arguments:
-        - y_pred: torch.Tensor[B, NUM_REACTIVITIES, 4] - the predicted reactivities and the predicted
-            errors
+        - y_pred: torch.Tensor[B, NUM_REACTIVITIES, 2] - the predicted reactivities
         - y_true: torch.Tensor[B, NUM_REACTIVITIES, 2] - the true reactivities
 
     Returns:
-        - Tuple[torch.Tensor, torch.Tensor] - loss for reactivity predictions, loss for error predictions
+        - torch.Tensor - loss for reactivity predictions
     """
-    # how much the model thought it'd be off by
-    errors_pred = y_pred[:, :, 2:]
-
-    # how far the models' predictions were off by
-    errors_true = l1(y_pred[:, :, :2], y_true)
-
-    return (
-        errors_true[weights != 0].mean(),
-        l1(errors_pred, errors_true)[weights != 0].mean(),
-    )
+    return (l1(y_pred, y_true))[weights != 0].mean()
 
 
 def weightedL1(
@@ -295,28 +285,18 @@ def weightedL1(
     y_true: torch.Tensor,
     weights: torch.Tensor,
     l1=nn.L1Loss(reduction="none"),
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> torch.Tensor:
     """
     MAE loss function that takes into account sample weights
 
     Arguments:
-        - y_pred: torch.Tensor[B, NUM_REACTIVITIES, 4] - the predicted reactivities and the predicted
-            errors
+        - y_pred: torch.Tensor[B, NUM_REACTIVITIES, 2] - the predicted reactivities
         - y_true: torch.Tensor[B, NUM_REACTIVITIES, 2] - the true reactivities
 
     Returns:
-        - Tuple[torch.Tensor, torch.Tensor] - loss for reactivity predictions, loss for error predictions
+        - torch.Tensor - loss for reactivity predictions
     """
-    # how much the model thought it'd be off by
-    errors_pred = y_pred[:, :, 2:]
-
-    # how far the models' predictions were off by
-    errors_true = l1(y_pred[:, :, :2], y_true)
-
-    return (
-        (errors_true * weights)[weights != 0].mean(),
-        (l1(errors_pred, errors_true) * weights)[weights != 0].mean(),
-    )
+    return (l1(y_pred, y_true) * weights)[weights != 0].mean()
 
 
 def train_batch(
@@ -326,32 +306,31 @@ def train_batch(
     outs: torch.Tensor,
     masks: torch.Tensor,
     m_optim: torch.optim.Optimizer,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Get the loss on a batch and perform the corresponding weight updates.
     Used for training purposes
+
+    Returns:
+        - Tuple[torch.Tensor, torch.Tensor] - weighted_loss, unweighted_loss
     """
     m_optim.zero_grad()
     preds = m(tokens, bpp)
 
     # get the weighted mae
-    weighted_reactivity_loss, weighted_error_loss = weightedL1(preds, outs, masks)
-    (weighted_reactivity_loss + weighted_error_loss).backward()
+    weighted_loss = weightedL1(preds, outs, masks)
+    weighted_loss.backward()
 
     # calculate gradients
     m_optim.step()
 
     with torch.no_grad():
-        unweighted_reactivity_loss, unweighted_error_loss = unweightedL1(
-            preds, outs, masks
-        )
+        unweighted_loss = unweightedL1(preds, outs, masks)
 
     # return weighted and unweighted mae loss
     return (
-        weighted_reactivity_loss.detach().cpu(),
-        weighted_error_loss.detach().cpu(),
-        unweighted_reactivity_loss.detach().cpu(),
-        unweighted_error_loss.detach().cpu(),
+        weighted_loss.detach().cpu(),
+        unweighted_loss.detach().cpu(),
     )
 
 
@@ -361,25 +340,21 @@ def noupdate_batch(
     bpp: torch.Tensor,
     outs: torch.Tensor,
     masks: torch.Tensor,
-):
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Get the loss on a batch without performing any updates.
     Used for validation purposes
+
+    Returns:
+        - Tuple[torch.Tensor, torch.Tensor] - weighted_loss, unweighted_loss
     """
     with torch.no_grad():
         preds = m(tokens, bpp)
-        weighted_reactivity_loss, weighted_error_loss = weightedL1(preds, outs, masks)
-        unweighted_reactivity_loss, unweighted_error_loss = unweightedL1(
-            preds, outs, masks
-        )
+        weighted_loss = weightedL1(preds, outs, masks)
+        unweighted_loss = unweightedL1(preds, outs, masks)
 
     # return weighted and unweighted mae loss
-    return (
-        weighted_reactivity_loss.cpu(),
-        weighted_error_loss.cpu(),
-        unweighted_reactivity_loss.cpu(),
-        unweighted_error_loss.cpu(),
-    )
+    return (weighted_loss.cpu(), unweighted_loss.cpu())
 
 
 def masked_train(
@@ -411,9 +386,7 @@ def masked_train(
     for epoch in range(1, epochs + 1):
         print(f"Epoch {epoch}")
         epoch_mae = 0.0
-        epoch_error_mae = 0.0
         epoch_weighted_mae = 0.0
-        epoch_weighted_error_mae = 0.0
 
         m = m.train()
         for tdata in (prog := tqdm(train_dataloader, desc="batch")):
@@ -427,31 +400,21 @@ def masked_train(
             outs = outs.to(device)
             masks = masks.to(device)
 
-            weighted_mae, weighted_error_mae, mae, error_mae = train_batch(
-                m, tokens, bpp, outs, masks, m_optim
-            )
+            weighted_mae, mae = train_batch(m, tokens, bpp, outs, masks, m_optim)
 
             epoch_weighted_mae += weighted_mae
-            epoch_weighted_error_mae += weighted_error_mae
             epoch_mae += mae
-            epoch_error_mae += error_mae
 
             # log
-            prog.set_postfix_str(
-                f"MAE: {mae:.5f}, ErrorMAE: {weighted_error_mae:.5f}, WMAE: {weighted_mae:.5f}, ErrorWMAE: {error_mae:.5f}"
-            )
+            prog.set_postfix_str(f"MAE: {mae:.5f}, WMAE: {weighted_mae:.5f}")
 
             # break  # used for sanity check
         epoch_weighted_mae /= len(train_dataloader)
-        epoch_weighted_error_mae /= len(train_dataloader)
         epoch_mae /= len(train_dataloader)
-        epoch_error_mae /= len(train_dataloader)
 
         # do validation
         val_mae = 0.0
-        val_error_mae = 0.0
         val_weighted_mae = 0.0
-        val_weighted_error_mae = 0.0
         m = m.eval()
         for vdata in val_dataloader:
             tokens = vdata["simple_tokens"]
@@ -463,26 +426,16 @@ def masked_train(
             bpp = bpp.to(device)
             outs = outs.to(device)
             masks = masks.to(device)
-            weighted_mae, weighted_error_mae, mae, error_mae = noupdate_batch(
-                m, tokens, bpp, outs, masks
-            )
+            weighted_mae, mae = noupdate_batch(m, tokens, bpp, outs, masks)
 
             val_weighted_mae += weighted_mae
-            val_weighted_error_mae += weighted_error_mae
             val_mae += mae
-            val_error_mae += error_mae
         val_weighted_mae /= len(val_dataloader)
-        val_weighted_error_mae /= len(val_dataloader)
         val_mae /= len(val_dataloader)
-        val_error_mae /= len(val_dataloader)
 
         print(
             f"Epoch MAE: {epoch_mae:.5f}\tEpoch WMAE: {epoch_weighted_mae:.5f}\t"
-            + f"Epoch Error MAE: {epoch_error_mae:.5f}\tEpoch Error WMAE {epoch_weighted_error_mae:.5f}"
-        )
-        print(
-            f"Val MAE: {val_mae:.5f}\tVal WMAE: {val_weighted_mae:.5f}\t"
-            + f"Val Error MAE: {val_error_mae:.5f}\t Val Error WMAE {val_weighted_error_mae:.5f}"
+            + f"Val MAE: {val_mae:.5f}\tVal WMAE: {val_weighted_mae:.5f}\t"
         )
 
         writer.add_scalar("epoch_mae", epoch_mae, global_step=epoch)
