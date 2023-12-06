@@ -34,7 +34,7 @@ def pipeline(
         for _ in tqdm(range(len(loader))):
             # get the next group of data
             tdata = next(iterable)
-            tokens = tdata["inputs"].to(DEVICE)
+            tokens = tdata["simple_tokens"].to(DEVICE)
             bpp = tdata["bpp"].to(DEVICE)
             min_ids = tdata["id_min"].numpy()
             max_ids = tdata["id_max"].numpy()

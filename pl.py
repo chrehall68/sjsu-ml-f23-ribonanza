@@ -6,7 +6,9 @@ from models import AttentionModel, DEVICE, train_batch
 from tqdm import tqdm
 
 
-def pl(model: torch.nn.Module, batch_size: int, device: torch.device):
+def pl(
+    model: torch.nn.Module, batch_size: int, error_interval: float, device: torch.device
+):
     """
     Pseudo-label test data (generate model predictions for each item in the test set)
 
@@ -14,22 +16,29 @@ def pl(model: torch.nn.Module, batch_size: int, device: torch.device):
     otherwise pseudo-labeling will only add noise to the training process
     """
     # columns to keep
-    columns = ["inputs", "bpp", "outputs", "output_masks"]
+    columns = ["simple_tokens", "bpp", "outputs", "output_masks"]
 
     def pred(rows):
         """
         Run inference on a batch, and store the outputs
         """
-        tokens = rows["inputs"].to(device)
+        tokens = rows["simple_tokens"].to(device)
         bpp = rows["bpp"].to(device)
 
         weights = torch.zeros((tokens.shape[0], NUM_REACTIVITIES, 2))
-        weights[tokens != 0] = 1
 
         with torch.no_grad():
             preds = model(tokens, bpp).cpu()
 
-        rows["outputs"] = preds
+        # separate the predictions
+        output_preds = preds[:, :, :2]
+        error_preds = preds[:, :, 2:]
+
+        # use only the predictions on real tokens that the model was sure about
+        error_preds[tokens == 0] = 0
+        weights[error_preds < error_interval] = 1
+
+        rows["outputs"] = output_preds
         rows["output_masks"] = weights
 
         return rows
@@ -80,7 +89,7 @@ def train_ds(
 
     # iterate through dl
     for batch in (prog := tqdm(dl)):
-        tokens: torch.Tensor = batch["inputs"]
+        tokens: torch.Tensor = batch["simple_tokens"]
         bpp: torch.Tensor = batch["bpp"]
         outs: torch.Tensor = batch["outputs"]
         masks: torch.Tensor = batch["output_masks"]
@@ -104,6 +113,7 @@ def train_ds(
 def ssl(
     name: str,
     lr: float = 1e-4,
+    error_interval: float = 0.15,
     train_batch_size: int = 32,
     label_batch_size: int = 64,
     epochs: int = 5,
@@ -122,6 +132,8 @@ def ssl(
     Arguments:
         - name: str - the name of the run and of the model to load
         - lr: float - the learning rate to use. Defaults to `1e-4`
+        - error_interval: float - the maximum predicted error to allow for pseudolabels
+            to be treated as real labels. Defaults to 0.15
         - train_batch_size: int - batch size for training (train mode). Defaults to `32`
         - label_batch_size: int - batch size for labeling (inference mode). Defaults to `64`
         - epochs: int - number of epochs to train for. One epoch is one complete pass on the
@@ -141,7 +153,7 @@ def ssl(
     # pl process
     for i in range(epochs):
         # make preds
-        ds = pl(model, label_batch_size, DEVICE)
+        ds = pl(model, label_batch_size, error_interval, DEVICE)
 
         # train on pseudo-labeled data
         print("pl epoch", i)

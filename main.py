@@ -29,7 +29,7 @@ if __name__ == "__main__":
 
     # train model on just train dataset
     name = "full_32lat"
-    train(name, dataset_name="full")
+    train(name, dataset_name="full", lr=1e-4)
 
     # semi-supervised learning
     ssl(name)
