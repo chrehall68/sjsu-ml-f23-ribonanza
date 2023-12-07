@@ -12,27 +12,27 @@ from submit import submit
 
 if __name__ == "__main__":
     # filter out data
-    filter_train_data()
-    filter_DMS()
-    filter_2A3()
+    # filter_train_data()
+    # filter_DMS()
+    # filter_2A3()
 
     # preprocess csvs
-    preprocess_csv("train_data_2a3_preprocessed", "train_data_2a3.csv")
-    preprocess_csv("train_data_dms_preprocessed", "train_data_dms.csv")
-    preprocess_csv(
-        "test_data_preprocessed",
-        "test_sequences.csv",
-        map_fn=process_data_test,
-        extra_cols_to_keep=["id_min", "id_max"],
-    )
-    combine_datasets()
+    # preprocess_csv("train_data_2a3_preprocessed", "train_data_2a3.csv")
+    # preprocess_csv("train_data_dms_preprocessed", "train_data_dms.csv")
+    # preprocess_csv(
+    #     "test_data_preprocessed",
+    #     "test_sequences.csv",
+    #     map_fn=process_data_test,
+    #     extra_cols_to_keep=["id_min", "id_max"],
+    # )
+    # combine_datasets()
 
     # train model on just train dataset
     name = "full_32lat"
-    train(name, dataset_name="full", lr=1e-4)
+    train(name, dataset_name="full", lr=1e-4, epochs=1)
 
     # semi-supervised learning
-    ssl(name)
+    # ssl(name)
 
     # submit predictions
-    submit(batch_size=64)
+    # submit(batch_size=64)

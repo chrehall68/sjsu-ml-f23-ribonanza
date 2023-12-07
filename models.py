@@ -2,12 +2,13 @@
 import torch
 from torch.utils.tensorboard.writer import SummaryWriter
 import torch.utils.data as data
+import torch.distributed as dist
 import torch.nn as nn
 import numpy as np
 from tqdm import tqdm
 from datasets import Dataset
 import os
-from constants import NUM_BPP, NUM_REACTIVITIES
+from constants import NUM_BPP, NUM_REACTIVITIES, SEED
 from typing import Tuple
 
 # used for better attention mechanisms
@@ -306,6 +307,7 @@ def train_batch(
     outs: torch.Tensor,
     masks: torch.Tensor,
     m_optim: torch.optim.Optimizer,
+    rank: int = 0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Get the loss on a batch and perform the corresponding weight updates.
@@ -324,14 +326,17 @@ def train_batch(
     # calculate gradients
     m_optim.step()
 
-    with torch.no_grad():
-        unweighted_loss = unweightedL1(preds, outs, masks)
-
     # return weighted and unweighted mae loss
-    return (
-        weighted_loss.detach().cpu(),
-        unweighted_loss.detach().cpu(),
-    )
+    if rank == 0:
+        with torch.no_grad():
+            unweighted_loss = unweightedL1(preds, outs, masks)
+
+        return (
+            weighted_loss.detach().cpu(),
+            unweighted_loss.detach().cpu(),
+        )
+    else:
+        return 0, 0
 
 
 def noupdate_batch(
@@ -340,6 +345,7 @@ def noupdate_batch(
     bpp: torch.Tensor,
     outs: torch.Tensor,
     masks: torch.Tensor,
+    rank: int = 0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Get the loss on a batch without performing any updates.
@@ -354,7 +360,10 @@ def noupdate_batch(
         unweighted_loss = unweightedL1(preds, outs, masks)
 
     # return weighted and unweighted mae loss
-    return (weighted_loss.cpu(), unweighted_loss.cpu())
+    if rank == 0:
+        return (weighted_loss.cpu(), unweighted_loss.cpu())
+    else:
+        return 0, 0
 
 
 def masked_train(
@@ -365,7 +374,8 @@ def masked_train(
     writer: SummaryWriter,
     model_name: str,
     epochs: int = 1,
-    device: str = DEVICE,
+    rank: int = 0,
+    device: torch.device = DEVICE,
 ):
     """
     Train the given model.
@@ -378,7 +388,8 @@ def masked_train(
         - writer: SummaryWriter - the logger to use
         - model_name: str - the name to save the model as
         - epochs: int - how many epochs to train for. Defaults to `1`.
-        - device: str - the device to train on, defaults to `DEVICE`
+        - rank: int - the rank of the node. Defaults to `0`. Only node 0 does logging
+        - device: torch.device - the device to train on, defaults to `DEVICE`
     """
     m = m.to(device)
 
@@ -400,54 +411,59 @@ def masked_train(
             outs = outs.to(device)
             masks = masks.to(device)
 
-            weighted_mae, mae = train_batch(m, tokens, bpp, outs, masks, m_optim)
-
+            weighted_mae, mae = train_batch(
+                m, tokens, bpp, outs, masks, m_optim, rank=rank
+            )
             epoch_weighted_mae += weighted_mae
             epoch_mae += mae
 
             # log
-            prog.set_postfix_str(f"MAE: {mae:.5f}, WMAE: {weighted_mae:.5f}")
+            if rank == 0:
+                prog.set_postfix_str(f"MAE: {mae:.5f}, WMAE: {weighted_mae:.5f}")
 
             # break  # used for sanity check
         epoch_weighted_mae /= len(train_dataloader)
         epoch_mae /= len(train_dataloader)
 
-        # do validation
-        val_mae = 0.0
-        val_weighted_mae = 0.0
-        m = m.eval()
-        for vdata in val_dataloader:
-            tokens = vdata["simple_tokens"]
-            bpp = vdata["bpp"]
-            outs = vdata["outputs"]
-            masks = vdata["output_masks"]
+        # do validation and save only if this is the first node
+        if rank == 0:
+            val_mae = 0.0
+            val_weighted_mae = 0.0
+            m = m.eval()
+            for vdata in val_dataloader:
+                tokens = vdata["simple_tokens"]
+                bpp = vdata["bpp"]
+                outs = vdata["outputs"]
+                masks = vdata["output_masks"]
 
-            tokens = tokens.to(device)
-            bpp = bpp.to(device)
-            outs = outs.to(device)
-            masks = masks.to(device)
-            weighted_mae, mae = noupdate_batch(m, tokens, bpp, outs, masks)
+                tokens = tokens.to(device)
+                bpp = bpp.to(device)
+                outs = outs.to(device)
+                masks = masks.to(device)
+                weighted_mae, mae = noupdate_batch(
+                    m, tokens, bpp, outs, masks, rank=rank
+                )
 
-            val_weighted_mae += weighted_mae
-            val_mae += mae
-        val_weighted_mae /= len(val_dataloader)
-        val_mae /= len(val_dataloader)
+                val_weighted_mae += weighted_mae
+                val_mae += mae
+            val_weighted_mae /= len(val_dataloader)
+            val_mae /= len(val_dataloader)
 
-        print(
-            f"Epoch MAE: {epoch_mae:.5f}\tEpoch WMAE: {epoch_weighted_mae:.5f}\t"
-            + f"Val MAE: {val_mae:.5f}\tVal WMAE: {val_weighted_mae:.5f}\t"
-        )
+            print(
+                f"Epoch MAE: {epoch_mae:.5f}\tEpoch WMAE: {epoch_weighted_mae:.5f}\t"
+                + f"Val MAE: {val_mae:.5f}\tVal WMAE: {val_weighted_mae:.5f}\t"
+            )
 
-        writer.add_scalar("epoch_mae", epoch_mae, global_step=epoch)
-        writer.add_scalar("val_mae", val_mae, global_step=epoch)
+            writer.add_scalar("epoch_mae", epoch_mae, global_step=epoch)
+            writer.add_scalar("val_mae", val_mae, global_step=epoch)
 
-        # save every epoch
-        torch.save(m.state_dict(), f"{model_name}_model.pt")
+            # save every epoch
+            torch.save(m.state_dict(), f"{model_name}_model.pt")
 
-        # save the best model as well
-        if val_mae < best_val_mae:
-            best_val_mae = val_mae
-            torch.save(m.state_dict(), "best.pt")
+            # save the best model as well
+            if val_mae < best_val_mae:
+                best_val_mae = val_mae
+                torch.save(m.state_dict(), "best.pt")
 
 
 def train(
@@ -464,6 +480,7 @@ def train(
         dec_layers=4,
         ff_dim=2048,
     ),
+    distributed: bool = False,
 ):
     """
     Train a model from start to finish, taking care of data loading,
@@ -478,9 +495,18 @@ def train(
         - epochs: int - the number of epochs to train for. Defaults to 10
         - model_dict: dict - a dictionary containing all the arguments to be passed when instantiating
             the `AttentionModel`
+        - distributed: bool - whether or not the training is distributed
     """
     # set seed for reproducibility
-    torch.manual_seed(2023)
+    torch.manual_seed(SEED)
+
+    rank = 0
+    cpu_count = os.cpu_count()
+    if distributed:
+        rank = int(os.environ["SLURM_PROCID"])
+        world_size = int(os.environ["WORLD_SIZE"])
+        cpu_count = int(os.environ["SLURM_CPUS_PER_TASK"])
+        dist.init_process_group("nccl", rank=rank, world_size=world_size)
 
     # load and process dataset
     columns = ["simple_tokens", "outputs", "output_masks", "bpp"]
@@ -488,7 +514,9 @@ def train(
     dataset = Dataset.load_from_disk(
         f"train_data_{dataset_name}_preprocessed"
     ).with_format("torch")
-    split = dataset.train_test_split(test_size=val_split).select_columns(columns)
+    split = dataset.train_test_split(test_size=val_split, seed=SEED).select_columns(
+        columns
+    )
     train_dataset = split["train"]
     val_dataset = split["test"]
 
@@ -501,10 +529,30 @@ def train(
     )
 
     # load into batches
+    sampler = None
+    if distributed:
+        sampler = data.DistributedSampler(
+            train_dataset, num_replicas=world_size, rank=rank, seed=SEED, shuffle=True
+        )
     train_dataloader = data.DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True if not distributed else None,
+        pin_memory=True,
+        pin_memory_device=str(DEVICE),
+        # the higher this is, the faster dataloading generally is
+        num_workers=cpu_count // 2,
+        sampler=sampler,
     )
-    val_dataloader = data.DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    val_dataloader = data.DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        pin_memory=True,
+        pin_memory_device=str(DEVICE),
+        # the higher this is, the faster dataloading generally is
+        num_workers=cpu_count // 2,
+    )
 
     # create logger
     writer = SummaryWriter(f"runs/{run_name}")
@@ -522,6 +570,11 @@ def train(
             print(f"not loading previous {run_name} weights because", e)
             pass
 
+    if distributed:
+        model = nn.parallel.DistributedDataParallel(
+            model, device_ids=[rank % torch.cuda.device_count()]
+        )
+
     # log # of parameters
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     params = sum([np.prod(p.size()) for p in model_parameters])
@@ -536,4 +589,8 @@ def train(
         writer=writer,
         model_name=run_name,
         epochs=epochs,
+        rank=rank,
     )
+
+    if distributed:
+        dist.destroy_process_group()
