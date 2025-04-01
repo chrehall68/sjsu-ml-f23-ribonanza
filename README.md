@@ -19,6 +19,7 @@ by around `0.002`
 - Haydon Behl
 - Neal Chandra
 - Eliot Hall
+- Atharva Jadhav
 
 ## Score
 Our best score was slightly less than 0.15
